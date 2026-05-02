@@ -269,9 +269,10 @@ func TestTestCommand(t *testing.T) {
 		t.Fatalf("test command should be recognized: %s", stderr.String())
 	}
 
-	// Output might contain test results or error about connection
+	// Output might contain test results (OK/FAIL) or error about connection/no proxy
 	output := stdout.String() + stderr.String()
-	if !strings.Contains(output, "group") && !strings.Contains(output, "connection") && !strings.Contains(output, "No proxy") {
+	if !strings.Contains(output, "group") && !strings.Contains(output, "connection") &&
+		!strings.Contains(output, "No proxy") && !strings.Contains(output, "OK") && !strings.Contains(output, "FAIL") {
 		t.Fatalf("unexpected output: %s", output)
 	}
 

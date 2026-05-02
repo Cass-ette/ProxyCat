@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/Cass-ette/ProxyCat/helper/internal/config"
@@ -309,35 +308,31 @@ func runGroupsSelect(group string, proxy string, stdout io.Writer, stderr io.Wri
 }
 
 func runTest(stdout io.Writer, stderr io.Writer) int {
-	client := controller.NewClient("")
-	groups, err := client.GetProxyGroups()
+	// Test connectivity through the local proxy at port 7890
+	result, err := controller.TestConnection("http://127.0.0.1:7890")
 	if err != nil {
-		fmt.Fprintf(stderr, "get proxy groups: %v\n", err)
+		fmt.Fprintf(stderr, "connection test failed: %v\n", err)
 		return 1
 	}
 
-	if len(groups) == 0 {
-		fmt.Fprintln(stdout, "No proxy groups to test")
-		return 0
+	if result.Error != "" {
+		fmt.Fprintf(stderr, "connection test error: %s\n", result.Error)
 	}
 
-	ok := true
-	for name := range groups {
-		result, err := client.TestConnection(name, 5000)
-		if err != nil {
-			fmt.Fprintf(stdout, "%s: FAIL (%v)\n", name, err)
-			ok = false
-			continue
-		}
-		if result.Success {
-			fmt.Fprintf(stdout, "%s: OK (%s ms)\n", name, strconv.Itoa(result.Delay))
-		} else {
-			fmt.Fprintf(stdout, "%s: FAIL (%s)\n", name, result.Message)
-			ok = false
-		}
+	// Print results
+	if result.GoogleOK {
+		fmt.Fprintln(stdout, "Google: OK")
+	} else {
+		fmt.Fprintln(stdout, "Google: FAIL")
 	}
 
-	if !ok {
+	if result.GitHubOK {
+		fmt.Fprintln(stdout, "GitHub: OK")
+	} else {
+		fmt.Fprintln(stdout, "GitHub: FAIL")
+	}
+
+	if !result.GoogleOK || !result.GitHubOK {
 		return 1
 	}
 	return 0
