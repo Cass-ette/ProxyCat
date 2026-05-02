@@ -32,6 +32,13 @@ func TestURLRedactsUserinfo(t *testing.T) {
 	}
 }
 
+func TestURLRedactsRawNodeURIs(t *testing.T) {
+	input := "vmess://eyJ2IjoiMiIsInBzIjoibm9kZSIsImlkIjoiMTIzZS00NTYifQ=="
+	if got := URL(input); got != "<redacted-node-uri>" {
+		t.Fatalf("URL(%q) = %q, want <redacted-node-uri>", input, got)
+	}
+}
+
 func TestStringRedactsRawNodeURIs(t *testing.T) {
 	cases := []string{
 		"ss://YWVzLTEyOC1nY206cGFzc3dvcmQ@example.com:443#node",
@@ -57,6 +64,15 @@ func TestStringRedactsSecretQueryAndUserinfoInsideText(t *testing.T) {
 	}
 	if !strings.Contains(got, "name=cat") {
 		t.Fatalf("redacted text removed non-sensitive query: %s", got)
+	}
+}
+
+func TestStringRedactsMixedCaseHTTPURL(t *testing.T) {
+	input := "download HTTPS://user:secret@example.com/sub?token=abc123 now"
+	got := String(input)
+
+	if strings.Contains(got, "user") || strings.Contains(got, "secret") || strings.Contains(got, "abc123") {
+		t.Fatalf("redacted text leaked secret: %s", got)
 	}
 }
 

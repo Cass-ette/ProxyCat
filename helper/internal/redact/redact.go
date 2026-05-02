@@ -21,9 +21,13 @@ var sensitiveQueryKeys = map[string]struct{}{
 }
 
 var rawNodeURIPattern = regexp.MustCompile(`(?i)\b(ss|ssr|trojan|vmess|vless|hysteria|hysteria2|hy2)://\S+`)
-var httpURLPattern = regexp.MustCompile(`https?://\S+`)
+var httpURLPattern = regexp.MustCompile(`(?i)\bhttps?://\S+`)
 
 func URL(input string) string {
+	if isRawNodeURI(input) {
+		return redactedNodeURI
+	}
+
 	parsed, err := url.Parse(input)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return String(input)
