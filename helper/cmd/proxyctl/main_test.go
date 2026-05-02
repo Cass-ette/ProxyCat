@@ -115,3 +115,44 @@ func TestSubscriptionListCommand(t *testing.T) {
 		t.Fatalf("list output missing subscription: %s", output)
 	}
 }
+
+func TestCoreStatusJSONCommand(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"core", "status", "--json"}, stdout, stderr)
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+
+	var decoded struct {
+		Running bool `json:"running"`
+		PID     int  `json:"pid"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+}
+
+func TestTestJSONCommand(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"test", "--json"}, stdout, stderr)
+	if exitCode != 0 && exitCode != 1 {
+		t.Fatalf("unexpected exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want JSON-only output", stderr.String())
+	}
+
+	var decoded struct {
+		GoogleOK bool   `json:"googleOK"`
+		GitHubOK bool   `json:"githubOK"`
+		Error    string `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+}
