@@ -29,9 +29,24 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
+	jsonOutput := false
+	filteredArgs := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--json" {
+			jsonOutput = true
+			continue
+		}
+		filteredArgs = append(filteredArgs, arg)
+	}
+	args = filteredArgs
+	if len(args) == 0 {
+		printHelp(stdout)
+		return 0
+	}
+
 	switch args[0] {
 	case "diagnose":
-		return runDiagnose(args[1:], stdout, stderr)
+		return runDiagnose(args[1:], jsonOutput, stdout, stderr)
 	case "subscription":
 		if len(args) < 2 {
 			fmt.Fprintf(stderr, "subscription subcommand required: add, list, update\n")
@@ -66,7 +81,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		case "restart":
 			return runCoreRestart(stdout, stderr)
 		case "status":
-			return runCoreStatus(stdout, stderr)
+			return runCoreStatusJSON(stdout, stderr, jsonOutput)
 		default:
 			fmt.Fprintf(stderr, "unknown core subcommand: %s\n", redact.String(args[1]))
 			return 2
@@ -83,7 +98,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		case "off":
 			return runSystemProxyOff(stdout, stderr)
 		case "status":
-			return runSystemProxyStatus(stdout, stderr)
+			return runSystemProxyStatusJSON(stdout, stderr, jsonOutput)
 		default:
 			fmt.Fprintf(stderr, "unknown system-proxy subcommand: %s\n", redact.String(args[1]))
 			return 2
@@ -91,11 +106,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	case "groups":
 		if len(args) < 2 {
-			return runGroupsList(stdout, stderr)
+			return runGroupsJSON(stdout, stderr, jsonOutput)
 		}
 		switch args[1] {
 		case "list":
-			return runGroupsList(stdout, stderr)
+			return runGroupsJSON(stdout, stderr, jsonOutput)
 		case "select":
 			if len(args) < 4 {
 				fmt.Fprintf(stderr, "groups select requires <group> <proxy>\n")
@@ -108,11 +123,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 
 	case "test":
-		return runTest(stdout, stderr)
+		return runTestJSON(stdout, stderr, jsonOutput)
 
 	case "select":
 		if len(args) < 3 {
-			fmt.Fprintf(stderr, "select requires <group> <proxy>\n")
+			fmt.Fprintf(stderr, "select requires group and proxy arguments\n")
 			return 2
 		}
 		return runSelect(args[1], args[2], stdout, stderr)
@@ -124,16 +139,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 }
 
-func runDiagnose(args []string, stdout io.Writer, stderr io.Writer) int {
-	jsonOutput := false
+func runDiagnose(args []string, jsonOutput bool, stdout io.Writer, stderr io.Writer) int {
 	for _, arg := range args {
-		switch arg {
-		case "--json":
-			jsonOutput = true
-		default:
-			fmt.Fprintf(stderr, "unknown diagnose flag: %s\n", redact.String(arg))
-			return 2
-		}
+		fmt.Fprintf(stderr, "unknown diagnose flag: %s\n", redact.String(arg))
+		return 2
 	}
 
 	runtimePaths, err := paths.Default()
@@ -227,10 +236,24 @@ func runCoreRestart(stdout io.Writer, stderr io.Writer) int {
 }
 
 func runCoreStatus(stdout io.Writer, stderr io.Writer) int {
+	return runCoreStatusJSON(stdout, stderr, false)
+}
+
+func runCoreStatusJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 	running, pid, err := core.Status()
 	if err != nil {
 		fmt.Fprintf(stderr, "check status: %v\n", err)
 		return 1
+	}
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(struct {
+			Running bool `json:"running"`
+			PID     int  `json:"pid"`
+		}{Running: running, PID: pid}); err != nil {
+			fmt.Fprintf(stderr, "encode core status: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	if running {
 		fmt.Fprintf(stdout, "Mihomo is running (pid: %d)\n", pid)
@@ -260,10 +283,22 @@ func runSystemProxyOff(stdout io.Writer, stderr io.Writer) int {
 }
 
 func runSystemProxyStatus(stdout io.Writer, stderr io.Writer) int {
+	return runSystemProxyStatusJSON(stdout, stderr, false)
+}
+
+func runSystemProxyStatusJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 	status, err := sysproxy.GetStatus()
 	if err != nil {
 		fmt.Fprintf(stderr, "get system proxy status: %v\n", err)
 		return 1
+	}
+
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(status); err != nil {
+			fmt.Fprintf(stderr, "encode system proxy status: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 
 	if status.HTTPEnabled || status.HTTPSEnabled || status.SOCKSEnabled {
@@ -284,11 +319,27 @@ func runSystemProxyStatus(stdout io.Writer, stderr io.Writer) int {
 }
 
 func runGroupsList(stdout io.Writer, stderr io.Writer) int {
+	return runGroupsJSON(stdout, stderr, false)
+}
+
+func runGroups(stdout io.Writer, stderr io.Writer) int {
+	return runGroupsList(stdout, stderr)
+}
+
+func runGroupsJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 	client := controller.NewClient("")
 	groups, err := client.GetProxyGroups()
 	if err != nil {
 		fmt.Fprintf(stderr, "get proxy groups: %v\n", err)
 		return 1
+	}
+
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(groups); err != nil {
+			fmt.Fprintf(stderr, "encode proxy groups: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 
 	if len(groups) == 0 {
@@ -320,6 +371,10 @@ func runSelect(group string, proxy string, stdout io.Writer, stderr io.Writer) i
 }
 
 func runTest(stdout io.Writer, stderr io.Writer) int {
+	return runTestJSON(stdout, stderr, false)
+}
+
+func runTestJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 	// Test connectivity through the local proxy at port 7890
 	result, err := controller.TestConnection("http://127.0.0.1:7890")
 	if err != nil {
@@ -327,21 +382,28 @@ func runTest(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	if result.Error != "" {
-		fmt.Fprintf(stderr, "connection test error: %s\n", result.Error)
-	}
-
-	// Print results
-	if result.GoogleOK {
-		fmt.Fprintln(stdout, "Google: OK")
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			fmt.Fprintf(stderr, "encode test result: %v\n", err)
+			return 1
+		}
 	} else {
-		fmt.Fprintln(stdout, "Google: FAIL")
-	}
+		if result.Error != "" {
+			fmt.Fprintf(stderr, "connection test error: %s\n", result.Error)
+		}
 
-	if result.GitHubOK {
-		fmt.Fprintln(stdout, "GitHub: OK")
-	} else {
-		fmt.Fprintln(stdout, "GitHub: FAIL")
+		// Print results
+		if result.GoogleOK {
+			fmt.Fprintln(stdout, "Google: OK")
+		} else {
+			fmt.Fprintln(stdout, "Google: FAIL")
+		}
+
+		if result.GitHubOK {
+			fmt.Fprintln(stdout, "GitHub: OK")
+		} else {
+			fmt.Fprintln(stdout, "GitHub: FAIL")
+		}
 	}
 
 	if !result.GoogleOK || !result.GitHubOK {
