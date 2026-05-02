@@ -7,13 +7,17 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/Cass-ette/ProxyCat/helper/internal/config"
+	"github.com/Cass-ette/ProxyCat/helper/internal/controller"
+	"github.com/Cass-ette/ProxyCat/helper/internal/core"
 	"github.com/Cass-ette/ProxyCat/helper/internal/diagnose"
 	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
 	"github.com/Cass-ette/ProxyCat/helper/internal/redact"
 	"github.com/Cass-ette/ProxyCat/helper/internal/subscription"
+	"github.com/Cass-ette/ProxyCat/helper/internal/sysproxy"
 )
 
 func main() {
@@ -50,6 +54,63 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "unknown subscription subcommand: %s\n", redact.String(args[1]))
 			return 2
 		}
+	case "core":
+		if len(args) < 2 {
+			fmt.Fprintf(stderr, "core subcommand required: start, stop, restart, status\n")
+			return 2
+		}
+		switch args[1] {
+		case "start":
+			return runCoreStart(stdout, stderr)
+		case "stop":
+			return runCoreStop(stdout, stderr)
+		case "restart":
+			return runCoreRestart(stdout, stderr)
+		case "status":
+			return runCoreStatus(stdout, stderr)
+		default:
+			fmt.Fprintf(stderr, "unknown core subcommand: %s\n", redact.String(args[1]))
+			return 2
+		}
+
+	case "system-proxy":
+		if len(args) < 2 {
+			fmt.Fprintf(stderr, "system-proxy subcommand required: on, off, status\n")
+			return 2
+		}
+		switch args[1] {
+		case "on":
+			return runSystemProxyOn(stdout, stderr)
+		case "off":
+			return runSystemProxyOff(stdout, stderr)
+		case "status":
+			return runSystemProxyStatus(stdout, stderr)
+		default:
+			fmt.Fprintf(stderr, "unknown system-proxy subcommand: %s\n", redact.String(args[1]))
+			return 2
+		}
+
+	case "groups":
+		if len(args) < 2 {
+			return runGroupsList(stdout, stderr)
+		}
+		switch args[1] {
+		case "list":
+			return runGroupsList(stdout, stderr)
+		case "select":
+			if len(args) < 4 {
+				fmt.Fprintf(stderr, "groups select requires <group> <proxy>\n")
+				return 2
+			}
+			return runGroupsSelect(args[2], args[3], stdout, stderr)
+		default:
+			fmt.Fprintf(stderr, "unknown groups subcommand: %s\n", redact.String(args[1]))
+			return 2
+		}
+
+	case "test":
+		return runTest(stdout, stderr)
+
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", redact.String(args[0]))
 		printHelp(stderr)
@@ -102,6 +163,184 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl subscription add <url>")
 	fmt.Fprintln(w, "  proxyctl subscription list")
 	fmt.Fprintln(w, "  proxyctl subscription update")
+	fmt.Fprintln(w, "  proxyctl core {start|stop|restart|status}")
+	fmt.Fprintln(w, "  proxyctl system-proxy {on|off|status}")
+	fmt.Fprintln(w, "  proxyctl groups [list]")
+	fmt.Fprintln(w, "  proxyctl groups select <group> <proxy>")
+	fmt.Fprintln(w, "  proxyctl test")
+}
+
+func runCoreStart(stdout io.Writer, stderr io.Writer) int {
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+
+	if err := os.MkdirAll(runtimePaths.Logs, 0o755); err != nil {
+		fmt.Fprintf(stderr, "create logs directory: %v\n", err)
+		return 1
+	}
+
+	pid, err := core.Start(runtimePaths.Mihomo, runtimePaths.ConfigYAML, runtimePaths.MihomoLog)
+	if err != nil {
+		fmt.Fprintf(stderr, "start mihomo: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "Mihomo started (pid: %d)\n", pid)
+	return 0
+}
+
+func runCoreStop(stdout io.Writer, stderr io.Writer) int {
+	running, pid, err := core.Status()
+	if err != nil {
+		fmt.Fprintf(stderr, "check status: %v\n", err)
+		return 1
+	}
+	if !running {
+		fmt.Fprintln(stdout, "Mihomo is not running")
+		return 0
+	}
+
+	if err := core.Stop(pid); err != nil {
+		fmt.Fprintf(stderr, "stop mihomo: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "Mihomo stopped (pid: %d)\n", pid)
+	return 0
+}
+
+func runCoreRestart(stdout io.Writer, stderr io.Writer) int {
+	if exit := runCoreStop(stdout, stderr); exit != 0 {
+		return exit
+	}
+	return runCoreStart(stdout, stderr)
+}
+
+func runCoreStatus(stdout io.Writer, stderr io.Writer) int {
+	running, pid, err := core.Status()
+	if err != nil {
+		fmt.Fprintf(stderr, "check status: %v\n", err)
+		return 1
+	}
+	if running {
+		fmt.Fprintf(stdout, "Mihomo is running (pid: %d)\n", pid)
+	} else {
+		fmt.Fprintln(stdout, "Mihomo is not running")
+	}
+	return 0
+}
+
+func runSystemProxyOn(stdout io.Writer, stderr io.Writer) int {
+	port := 7890
+	if err := sysproxy.Enable(port); err != nil {
+		fmt.Fprintf(stderr, "enable system proxy: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "System proxy enabled (127.0.0.1:%d)\n", port)
+	return 0
+}
+
+func runSystemProxyOff(stdout io.Writer, stderr io.Writer) int {
+	if err := sysproxy.Disable(); err != nil {
+		fmt.Fprintf(stderr, "disable system proxy: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "System proxy disabled")
+	return 0
+}
+
+func runSystemProxyStatus(stdout io.Writer, stderr io.Writer) int {
+	status, err := sysproxy.GetStatus()
+	if err != nil {
+		fmt.Fprintf(stderr, "get system proxy status: %v\n", err)
+		return 1
+	}
+
+	if status.HTTPEnabled || status.HTTPSEnabled || status.SOCKSEnabled {
+		fmt.Fprintln(stdout, "System proxy: ON")
+		if status.HTTPEnabled {
+			fmt.Fprintf(stdout, "  HTTP: %s:%d\n", status.HTTPHost, status.HTTPPort)
+		}
+		if status.HTTPSEnabled {
+			fmt.Fprintf(stdout, "  HTTPS: %s:%d\n", status.HTTPSHost, status.HTTPSPort)
+		}
+		if status.SOCKSEnabled {
+			fmt.Fprintf(stdout, "  SOCKS: %s:%d\n", status.SOCKSHost, status.SOCKSPort)
+		}
+	} else {
+		fmt.Fprintln(stdout, "System proxy: OFF")
+	}
+	return 0
+}
+
+func runGroupsList(stdout io.Writer, stderr io.Writer) int {
+	client := controller.NewClient("")
+	groups, err := client.GetProxyGroups()
+	if err != nil {
+		fmt.Fprintf(stderr, "get proxy groups: %v\n", err)
+		return 1
+	}
+
+	if len(groups) == 0 {
+		fmt.Fprintln(stdout, "No proxy groups")
+		return 0
+	}
+
+	for name, group := range groups {
+		fmt.Fprintf(stdout, "%s (%s): current=%s\n", name, group.Type, group.Now)
+		for i, proxy := range group.All {
+			fmt.Fprintf(stdout, "  %d. %s\n", i+1, proxy)
+		}
+	}
+	return 0
+}
+
+func runGroupsSelect(group string, proxy string, stdout io.Writer, stderr io.Writer) int {
+	client := controller.NewClient("")
+	if err := client.SelectProxy(group, proxy); err != nil {
+		fmt.Fprintf(stderr, "select proxy: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Selected %s for group %s\n", proxy, group)
+	return 0
+}
+
+func runTest(stdout io.Writer, stderr io.Writer) int {
+	client := controller.NewClient("")
+	groups, err := client.GetProxyGroups()
+	if err != nil {
+		fmt.Fprintf(stderr, "get proxy groups: %v\n", err)
+		return 1
+	}
+
+	if len(groups) == 0 {
+		fmt.Fprintln(stdout, "No proxy groups to test")
+		return 0
+	}
+
+	ok := true
+	for name := range groups {
+		result, err := client.TestConnection(name, 5000)
+		if err != nil {
+			fmt.Fprintf(stdout, "%s: FAIL (%v)\n", name, err)
+			ok = false
+			continue
+		}
+		if result.Success {
+			fmt.Fprintf(stdout, "%s: OK (%s ms)\n", name, strconv.Itoa(result.Delay))
+		} else {
+			fmt.Fprintf(stdout, "%s: FAIL (%s)\n", name, result.Message)
+			ok = false
+		}
+	}
+
+	if !ok {
+		return 1
+	}
+	return 0
 }
 
 func runSubscriptionAdd(url string, stdout io.Writer, stderr io.Writer) int {
