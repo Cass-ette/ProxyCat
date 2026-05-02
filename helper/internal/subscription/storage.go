@@ -42,7 +42,19 @@ func Load(path string) ([]Record, error) {
 }
 
 func Save(path string, records []Record) error {
-	data, err := json.MarshalIndent(records, "", "  ")
+	// Use raw type to bypass MarshalJSON and preserve actual URLs.
+	type raw struct {
+		URL        string    `json:"url"`
+		Name       string    `json:"name"`
+		LastUpdate time.Time `json:"lastUpdate"`
+	}
+
+	rawRecords := make([]raw, len(records))
+	for i, r := range records {
+		rawRecords[i] = raw(r)
+	}
+
+	data, err := json.MarshalIndent(rawRecords, "", "  ")
 	if err != nil {
 		return err
 	}

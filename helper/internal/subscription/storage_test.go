@@ -79,12 +79,18 @@ func TestLoadAndSaveRoundtrip(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 
-	if len(loaded) != 2 {
-		t.Fatalf("loaded %d records, want 2", len(loaded))
+	if len(loaded) != len(original) {
+		t.Fatalf("loaded %d records, want %d", len(loaded), len(original))
 	}
 
-	if loaded[0].Name != "A" || loaded[1].Name != "B" {
-		t.Fatalf("names wrong: %+v", loaded)
+	// Verify all fields including URL preservation.
+	for i, want := range original {
+		if loaded[i].Name != want.Name {
+			t.Fatalf("record[%d].Name = %q, want %q", i, loaded[i].Name, want.Name)
+		}
+		if loaded[i].URL != want.URL {
+			t.Fatalf("record[%d].URL = %q, want %q", i, loaded[i].URL, want.URL)
+		}
 	}
 }
 
