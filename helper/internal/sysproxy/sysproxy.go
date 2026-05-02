@@ -3,6 +3,7 @@ package sysproxy
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -12,7 +13,6 @@ import (
 
 // Status represents the current system proxy configuration.
 type Status struct {
-	Service      string `json:"service"`
 	HTTPEnabled  bool   `json:"httpEnabled"`
 	HTTPHost     string `json:"httpHost"`
 	HTTPPort     int    `json:"httpPort"`
@@ -93,7 +93,7 @@ func GetStatus() (*Status, error) {
 		return nil, fmt.Errorf("get proxy status: %w", err)
 	}
 
-	return parseStatus(string(output)), nil
+	return parseScutilOutput(string(output))
 }
 
 // getNetworkServices returns a list of network service names.
@@ -118,8 +118,12 @@ func getNetworkServices() ([]string, error) {
 	return services, nil
 }
 
-// parseStatus parses the output of scutil --proxy.
-func parseStatus(output string) *Status {
+// parseScutilOutput parses the output of scutil --proxy.
+func parseScutilOutput(output string) (*Status, error) {
+	if strings.TrimSpace(output) == "" {
+		return nil, errors.New("empty scutil output")
+	}
+
 	status := &Status{}
 	scanner := bufio.NewScanner(strings.NewReader(output))
 
@@ -127,45 +131,40 @@ func parseStatus(output string) *Status {
 		line := scanner.Text()
 		line = strings.TrimSpace(line)
 
-		switch {
-		case strings.HasPrefix(line, "HTTPEnable"):
-			status.HTTPEnabled = strings.Contains(line, ": 1")
-		case strings.HasPrefix(line, "HTTPProxy") && !strings.HasPrefix(line, "HTTPEnable"):
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				status.HTTPHost = strings.TrimSpace(parts[1])
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		switch key {
+		case "HTTPEnable":
+			status.HTTPEnabled = value == "1"
+		case "HTTPHost":
+			if value != "(null)" {
+				status.HTTPHost = value
 			}
-		case strings.HasPrefix(line, "HTTPPort"):
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				status.HTTPPort, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+		case "HTTPPort":
+			status.HTTPPort, _ = strconv.Atoi(value)
+		case "HTTPSEnable":
+			status.HTTPSEnabled = value == "1"
+		case "HTTPSHost":
+			if value != "(null)" {
+				status.HTTPSHost = value
 			}
-		case strings.HasPrefix(line, "HTTPSEnable"):
-			status.HTTPSEnabled = strings.Contains(line, ": 1")
-		case strings.HasPrefix(line, "HTTPSProxy") && !strings.HasPrefix(line, "HTTPSEnable"):
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				status.HTTPSHost = strings.TrimSpace(parts[1])
+		case "HTTPSPort":
+			status.HTTPSPort, _ = strconv.Atoi(value)
+		case "SOCKSEnable":
+			status.SOCKSEnabled = value == "1"
+		case "SOCKSHost":
+			if value != "(null)" {
+				status.SOCKSHost = value
 			}
-		case strings.HasPrefix(line, "HTTPSPort"):
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				status.HTTPSPort, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
-			}
-		case strings.HasPrefix(line, "SOCKSEnable"):
-			status.SOCKSEnabled = strings.Contains(line, ": 1")
-		case strings.HasPrefix(line, "SOCKSProxy") && !strings.HasPrefix(line, "SOCKSEnable"):
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				status.SOCKSHost = strings.TrimSpace(parts[1])
-			}
-		case strings.HasPrefix(line, "SOCKSPort"):
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				status.SOCKSPort, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
-			}
+		case "SOCKSPort":
+			status.SOCKSPort, _ = strconv.Atoi(value)
 		}
 	}
 
-	return status
+	return status, nil
 }
