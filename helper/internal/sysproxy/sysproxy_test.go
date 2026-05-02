@@ -15,13 +15,13 @@ func TestParseScutilOutput(t *testing.T) {
 			name: "all proxies enabled",
 			output: `<dictionary> {
   HTTPEnable : 1
-  HTTPHost : 127.0.0.1
+  HTTPProxy : 127.0.0.1
   HTTPPort : 8080
   HTTPSEnable : 1
-  HTTPSHost : 127.0.0.1
+  HTTPSProxy : 127.0.0.1
   HTTPSPort : 8080
   SOCKSEnable : 1
-  SOCKSHost : 127.0.0.1
+  SOCKSProxy : 127.0.0.1
   SOCKSPort : 8080
 }`,
 			expected: &Status{
@@ -40,13 +40,13 @@ func TestParseScutilOutput(t *testing.T) {
 			name: "all proxies disabled",
 			output: `<dictionary> {
   HTTPEnable : 0
-  HTTPHost : (null)
+  HTTPProxy : (null)
   HTTPPort : 0
   HTTPSEnable : 0
-  HTTPSHost : (null)
+  HTTPSProxy : (null)
   HTTPSPort : 0
   SOCKSEnable : 0
-  SOCKSHost : (null)
+  SOCKSProxy : (null)
   SOCKSPort : 0
 }`,
 			expected: &Status{
@@ -65,13 +65,13 @@ func TestParseScutilOutput(t *testing.T) {
 			name: "mixed state",
 			output: `<dictionary> {
   HTTPEnable : 1
-  HTTPHost : 192.168.1.1
+  HTTPProxy : 192.168.1.1
   HTTPPort : 3128
   HTTPSEnable : 0
-  HTTPSHost : (null)
+  HTTPSProxy : (null)
   HTTPSPort : 0
   SOCKSEnable : 1
-  SOCKSHost : 10.0.0.1
+  SOCKSProxy : 10.0.0.1
   SOCKSPort : 1080
 }`,
 			expected: &Status{
@@ -90,7 +90,7 @@ func TestParseScutilOutput(t *testing.T) {
 			name: "missing fields",
 			output: `<dictionary> {
   HTTPEnable : 1
-  HTTPHost : 127.0.0.1
+  HTTPProxy : 127.0.0.1
   HTTPPort : 8080
 }`,
 			expected: &Status{

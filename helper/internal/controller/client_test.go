@@ -23,8 +23,8 @@ func TestNewClient(t *testing.T) {
 func TestGetConfig(t *testing.T) {
 	// Create test server
 	config := Config{
-		Port:   7890,
-		Mode:   "rule",
+		Port:     7890,
+		Mode:     "rule",
 		LogLevel: "info",
 	}
 
@@ -122,16 +122,16 @@ func TestGetProxyGroups(t *testing.T) {
 	// Proxy groups are returned as part of the proxies endpoint
 	allProxies := map[string]Proxy{
 		"Auto": {
-			Name:    "Auto",
-			Type:    "url-test",
-			Now:     "Proxy1",
-			All:     []string{"Proxy1", "Proxy2", "Proxy3"},
+			Name: "Auto",
+			Type: "URLTest",
+			Now:  "Proxy1",
+			All:  []string{"Proxy1", "Proxy2", "Proxy3"},
 		},
 		"Manual": {
-			Name:    "Manual",
-			Type:    "select",
-			Now:     "Direct",
-			All:     []string{"Direct", "Proxy1", "Proxy2"},
+			Name: "Manual",
+			Type: "Selector",
+			Now:  "Direct",
+			All:  []string{"Direct", "Proxy1", "Proxy2"},
 		},
 		"Proxy1": {
 			Name:   "Proxy1",
@@ -245,13 +245,13 @@ func TestGetProxiesServerError(t *testing.T) {
 func TestGetProxyGroupsFilterTypes(t *testing.T) {
 	// Test that only selector-like types are returned
 	allProxies := map[string]Proxy{
-		"Auto":      {Name: "Auto", Type: "url-test", Now: "Proxy1", All: []string{"Proxy1"}},
-		"Manual":    {Name: "Manual", Type: "select", Now: "Direct", All: []string{"Direct"}},
-		"Fallback":  {Name: "Fallback", Type: "fallback", Now: "Proxy1", All: []string{"Proxy1"}},
-		"LoadBalance": {Name: "LoadBalance", Type: "load-balance", Now: "Proxy1", All: []string{"Proxy1"}},
-		"Relay":     {Name: "Relay", Type: "relay", Now: "Proxy1", All: []string{"Proxy1"}},
-		"Proxy1":    {Name: "Proxy1", Type: "ss", Server: "1.2.3.4", Port: 8388},
-		"Proxy2":    {Name: "Proxy2", Type: "vmess", Server: "5.6.7.8", Port: 443},
+		"Auto":        {Name: "Auto", Type: "URLTest", Now: "Proxy1", All: []string{"Proxy1"}},
+		"Manual":      {Name: "Manual", Type: "Selector", Now: "Direct", All: []string{"Direct"}},
+		"Fallback":    {Name: "Fallback", Type: "Fallback", Now: "Proxy1", All: []string{"Proxy1"}},
+		"LoadBalance": {Name: "LoadBalance", Type: "LoadBalance", Now: "Proxy1", All: []string{"Proxy1"}},
+		"Relay":       {Name: "Relay", Type: "Relay", Now: "Proxy1", All: []string{"Proxy1"}},
+		"Proxy1":      {Name: "Proxy1", Type: "ss", Server: "1.2.3.4", Port: 8388},
+		"Proxy2":      {Name: "Proxy2", Type: "vmess", Server: "5.6.7.8", Port: 443},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

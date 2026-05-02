@@ -46,25 +46,31 @@ func TestConnection(proxyURL string) (*TestResult, error) {
 	googleResp, err := client.Do(googleReq)
 	if err != nil {
 		result.Error = fmt.Sprintf("Google request failed: %v", err)
-		return result, nil
+	} else {
+		googleResp.Body.Close()
+		result.GoogleOK = googleResp.StatusCode == http.StatusNoContent
 	}
-	googleResp.Body.Close()
-	result.GoogleOK = googleResp.StatusCode == http.StatusNoContent
 
 	// Test GitHub endpoint
 	githubReq, err := http.NewRequest("GET", "https://github.com", nil)
 	if err != nil {
-		result.Error = fmt.Sprintf("failed to create GitHub request: %v", err)
+		if result.Error != "" {
+			result.Error += "; "
+		}
+		result.Error += fmt.Sprintf("failed to create GitHub request: %v", err)
 		return result, nil
 	}
 
 	githubResp, err := client.Do(githubReq)
 	if err != nil {
-		result.Error = fmt.Sprintf("GitHub request failed: %v", err)
-		return result, nil
+		if result.Error != "" {
+			result.Error += "; "
+		}
+		result.Error += fmt.Sprintf("GitHub request failed: %v", err)
+	} else {
+		githubResp.Body.Close()
+		result.GitHubOK = githubResp.StatusCode == http.StatusOK
 	}
-	githubResp.Body.Close()
-	result.GitHubOK = githubResp.StatusCode == http.StatusOK
 
 	return result, nil
 }

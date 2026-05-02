@@ -54,6 +54,7 @@ func Stop(pid int) error {
 
 // Status checks if the Mihomo process is currently running.
 // Uses pgrep -x mihomo to find the process.
+// If multiple processes exist, returns the first one (oldest).
 // Returns (running bool, pid int, err error).
 func Status() (bool, int, error) {
 	// Run pgrep -x mihomo to find the process
@@ -63,12 +64,13 @@ func Status() (bool, int, error) {
 		return false, 0, nil
 	}
 
-	// Parse PID from output
-	pidStr := strings.TrimSpace(string(output))
-	if pidStr == "" {
+	// Parse PID from output (handle multiple lines - take first)
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 0 || lines[0] == "" {
 		return false, 0, nil
 	}
 
+	pidStr := strings.TrimSpace(lines[0])
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
 		return false, 0, fmt.Errorf("failed to parse pid: %w", err)

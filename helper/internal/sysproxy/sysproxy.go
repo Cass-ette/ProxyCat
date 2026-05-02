@@ -141,7 +141,7 @@ func parseScutilOutput(output string) (*Status, error) {
 		switch key {
 		case "HTTPEnable":
 			status.HTTPEnabled = value == "1"
-		case "HTTPHost":
+		case "HTTPProxy":
 			if value != "(null)" {
 				status.HTTPHost = value
 			}
@@ -149,7 +149,7 @@ func parseScutilOutput(output string) (*Status, error) {
 			status.HTTPPort, _ = strconv.Atoi(value)
 		case "HTTPSEnable":
 			status.HTTPSEnabled = value == "1"
-		case "HTTPSHost":
+		case "HTTPSProxy":
 			if value != "(null)" {
 				status.HTTPSHost = value
 			}
@@ -157,7 +157,7 @@ func parseScutilOutput(output string) (*Status, error) {
 			status.HTTPSPort, _ = strconv.Atoi(value)
 		case "SOCKSEnable":
 			status.SOCKSEnabled = value == "1"
-		case "SOCKSHost":
+		case "SOCKSProxy":
 			if value != "(null)" {
 				status.SOCKSHost = value
 			}

@@ -21,38 +21,38 @@ type Client struct {
 
 // Config represents the Mihomo configuration.
 type Config struct {
-	Port        int               `json:"port"`
-	SocksPort   int               `json:"socks-port"`
-	RedirPort   int               `json:"redir-port"`
-	MixedPort   int               `json:"mixed-port"`
-	Mode        string            `json:"mode"`
-	LogLevel    string            `json:"log-level"`
-	AllowLan    bool              `json:"allow-lan"`
-	BindAddress string            `json:"bind-address"`
-	IPv6        bool              `json:"ipv6"`
-	ExternalUI  string            `json:"external-ui"`
-	Secret      string            `json:"secret"`
+	Port        int                    `json:"port"`
+	SocksPort   int                    `json:"socks-port"`
+	RedirPort   int                    `json:"redir-port"`
+	MixedPort   int                    `json:"mixed-port"`
+	Mode        string                 `json:"mode"`
+	LogLevel    string                 `json:"log-level"`
+	AllowLan    bool                   `json:"allow-lan"`
+	BindAddress string                 `json:"bind-address"`
+	IPv6        bool                   `json:"ipv6"`
+	ExternalUI  string                 `json:"external-ui"`
+	Secret      string                 `json:"secret"`
 	Tun         map[string]interface{} `json:"tun,omitempty"`
-	DNS         map[string]interface{}   `json:"dns,omitempty"`
+	DNS         map[string]interface{} `json:"dns,omitempty"`
 }
 
 // Proxy represents a proxy or proxy group.
 type Proxy struct {
-	Name       string                 `json:"name"`
-	Type       string                 `json:"type"`
-	Server     string                 `json:"server,omitempty"`
-	Port       int                    `json:"port,omitempty"`
-	Now        string                 `json:"now,omitempty"`
-	All        []string               `json:"all,omitempty"`
-	History    []ProxyHistory         `json:"history,omitempty"`
-	Extra      map[string]interface{} `json:"-,omitempty"`
+	Name    string                 `json:"name"`
+	Type    string                 `json:"type"`
+	Server  string                 `json:"server,omitempty"`
+	Port    int                    `json:"port,omitempty"`
+	Now     string                 `json:"now,omitempty"`
+	All     []string               `json:"all,omitempty"`
+	History []ProxyHistory         `json:"history,omitempty"`
+	Extra   map[string]interface{} `json:"-,omitempty"`
 }
 
 // ProxyHistory represents the latency history of a proxy.
 type ProxyHistory struct {
-	Time    string  `json:"time"`
-	Delay   int     `json:"delay"`
-	MeanDelay int   `json:"meanDelay,omitempty"`
+	Time      string `json:"time"`
+	Delay     int    `json:"delay"`
+	MeanDelay int    `json:"meanDelay,omitempty"`
 }
 
 // proxiesResponse is the wrapper for the /proxies endpoint response.
@@ -158,7 +158,7 @@ func (c *Client) GetProxies() (map[string]Proxy, error) {
 // isProxyGroupType returns true if the proxy type is a group type (selectable).
 func isProxyGroupType(proxyType string) bool {
 	switch proxyType {
-	case "select", "url-test", "fallback", "load-balance", "relay":
+	case "Selector", "URLTest", "Fallback", "LoadBalance", "Relay":
 		return true
 	default:
 		return false
