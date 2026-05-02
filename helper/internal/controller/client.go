@@ -186,8 +186,17 @@ func (c *Client) GetProxyGroups() (map[string]Proxy, error) {
 // SelectProxy selects a proxy for a given proxy group.
 func (c *Client) SelectProxy(groupName, proxyName string) error {
 	// URL encode the group name to handle special characters
-	encodedGroup := url.PathEscape(groupName)
-	path := "/proxies/" + encodedGroup
+	// We need to properly encode the path component while preserving the encoding
+	pathComponent := "/proxies/" + groupName
+	encodedPath := "/proxies/" + url.PathEscape(groupName)
+
+	// Build URL with both Path and RawPath to ensure encoding is preserved
+	base, err := url.Parse(c.baseURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse base URL: %w", err)
+	}
+	base.Path = pathComponent
+	base.RawPath = encodedPath
 
 	reqBody := selectProxyRequest{Name: proxyName}
 	body, err := json.Marshal(reqBody)
@@ -195,7 +204,7 @@ func (c *Client) SelectProxy(groupName, proxyName string) error {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("PUT", c.baseURL+path, bytes.NewReader(body))
+	req, err := http.NewRequest("PUT", base.String(), bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
