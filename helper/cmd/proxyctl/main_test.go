@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -71,5 +74,44 @@ func TestUnknownCommandRedactsSecrets(t *testing.T) {
 	}
 	if !strings.Contains(got, "unknown command") {
 		t.Fatalf("stderr missing unknown command message: %s", got)
+	}
+}
+
+func TestSubscriptionAddCommand(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"subscription", "add", "https://example.com/sub?token=test123"}, stdout, stderr)
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+
+	// Verify subscriptions.json was created
+	configDir := filepath.Join(tempHome, "Library", "Application Support", "ProxyCat", "config")
+	_, err := os.Stat(filepath.Join(configDir, "subscriptions.json"))
+	if err != nil {
+		t.Fatalf("subscriptions.json not created: %v", err)
+	}
+}
+
+func TestSubscriptionListCommand(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	// First add a subscription
+	run([]string{"subscription", "add", "https://example.com/sub?token=test123"}, io.Discard, io.Discard)
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"subscription", "list"}, stdout, stderr)
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "example.com") {
+		t.Fatalf("list output missing subscription: %s", output)
 	}
 }
