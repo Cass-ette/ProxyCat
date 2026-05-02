@@ -106,7 +106,8 @@ func TestCleanupOldBackups(t *testing.T) {
 }
 
 func formatBackupName(index int) string {
-	// Create names that look like timestamped backups (e.g., "backup-a.yaml")
-	// Must contain "-" and end with ".yaml" to match isBackupFile logic
-	return "backup-" + string(rune('a'+index)) + ".yaml"
+	// Create timestamped backup names like "config-20060102-150405.yaml"
+	// Must match backupTimeFormat: YYYYMMDD-HHMMSS
+	timestamps := []string{"20060102-150405", "20060102-150406", "20060102-150407", "20060102-150408", "20060102-150409"}
+	return "backup-" + timestamps[index] + ".yaml"
 }

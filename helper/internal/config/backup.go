@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +12,8 @@ import (
 
 const backupTimeFormat = "20060102-150405"
 
+// Backup creates a timestamped copy of configPath in backupDir.
+// Returns the path to the created backup file.
 func Backup(configPath string, backupDir string) (string, error) {
 	// Read original config
 	content, err := os.ReadFile(configPath)
@@ -39,6 +42,8 @@ func Backup(configPath string, backupDir string) (string, error) {
 	return backupPath, nil
 }
 
+// CleanupOldBackups removes oldest backups in backupDir, keeping only the specified count.
+// Only files matching the timestamped backup pattern are affected.
 func CleanupOldBackups(backupDir string, keep int) error {
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
@@ -76,7 +81,10 @@ func CleanupOldBackups(backupDir string, keep int) error {
 	return nil
 }
 
+// backupFilePattern matches timestamped backup files like "config-20060102-150405.yaml"
+// Pattern: any name, hyphen, 8 digits (YYYYMMDD), hyphen, 6 digits (HHMMSS), .yaml extension
+var backupFilePattern = regexp.MustCompile(`^.+-\d{8}-\d{6}\.yaml$`)
+
 func isBackupFile(name string) bool {
-	// Backup files have timestamp suffix like "config-20060102-150405.yaml"
-	return strings.Contains(name, "-") && strings.HasSuffix(name, ".yaml")
+	return backupFilePattern.MatchString(name)
 }

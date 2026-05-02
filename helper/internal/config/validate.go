@@ -6,6 +6,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ValidationResult contains the outcome and details of config validation.
 type ValidationResult struct {
 	Valid       bool   `json:"valid"`
 	Message     string `json:"message"`
@@ -21,6 +22,8 @@ type minimalConfig struct {
 	Rules       []yaml.Node `yaml:"rules"`
 }
 
+// Validate checks if content is a valid Mihomo/Clash YAML config.
+// Requires at least one proxy, one proxy-group, and one rule to be considered valid.
 func Validate(content []byte) ValidationResult {
 	if len(content) == 0 {
 		return ValidationResult{Valid: false, Message: "empty config"}

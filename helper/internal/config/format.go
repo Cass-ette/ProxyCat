@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// Format identifies the detected subscription/config format.
 type Format string
 
 const (
@@ -16,16 +17,20 @@ const (
 	FormatPlainList   Format = "plain-uri-list"
 )
 
+// Confidence indicates how certain the format detection is.
 type Confidence string
 
 const (
-	ConfidenceNone  Confidence = "none"
-	ConfidenceLow   Confidence = "low"
-	ConfidenceHigh  Confidence = "high"
+	ConfidenceNone Confidence = "none"
+	ConfidenceLow  Confidence = "low"
+	ConfidenceHigh Confidence = "high"
 )
 
 var nodeURIPattern = regexp.MustCompile(`(?i)^(ss|ssr|trojan|vmess|vless|hysteria|hysteria2|hy2)://`)
 
+// DetectFormat analyzes content to identify its subscription format.
+// Supports Clash YAML, base64-encoded URI lists, and plain URI lists.
+// Returns the detected format and confidence level.
 func DetectFormat(content []byte) (Format, Confidence) {
 	if len(content) == 0 {
 		return FormatUnknown, ConfidenceNone

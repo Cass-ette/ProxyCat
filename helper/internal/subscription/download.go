@@ -8,10 +8,14 @@ import (
 
 const maxDownloadSize = 10 * 1024 * 1024 // 10MB limit
 
+// HTTPClient is the interface for performing HTTP requests.
+// Implemented by *http.Client in production and test mocks in tests.
 type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// Download fetches the subscription content from url using the provided HTTP client.
+// Returns an error if the response status is not 200 or if the content exceeds 10MB.
 func Download(client HTTPClient, url string, userAgent string) ([]byte, error) {
 	return downloadWithClient(client, url, userAgent)
 }

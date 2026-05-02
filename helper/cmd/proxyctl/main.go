@@ -205,11 +205,13 @@ func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 		result := config.Validate(content)
 		if result.Valid {
 			fmt.Fprintf(stdout, "  Valid: %d proxies, %d groups, %d rules\n", result.ProxyCount, result.GroupCount, result.RuleCount)
+			// Only update LastUpdate on successful validation
+			records[i].LastUpdate = time.Now()
 		} else {
 			fmt.Fprintf(stdout, "  Invalid: %s\n", result.Message)
+			// Skip updating timestamp for failed validation
+			continue
 		}
-
-		records[i].LastUpdate = time.Now()
 	}
 
 	if err := subscription.Save(runtimePaths.SubscriptionsJSON, records); err != nil {
