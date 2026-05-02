@@ -279,6 +279,51 @@ func TestTestCommand(t *testing.T) {
 	_ = exitCode
 }
 
+// TestSelectCommand tests the top-level select command
+func TestSelectCommand(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	// Test select with args - will fail since no mihomo running
+	exitCode := run([]string{"select", "Auto", "Direct"}, stdout, stderr)
+
+	// Should not be unknown command error
+	if strings.Contains(stderr.String(), "unknown command") {
+		t.Fatalf("select command should be recognized: %s", stderr.String())
+	}
+
+	// Might fail due to connection, but command should be recognized
+	_ = exitCode
+}
+
+func TestSelectMissingArgs(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	exitCode := run([]string{"select"}, stdout, stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for missing args, got %d", exitCode)
+	}
+
+	if !strings.Contains(stderr.String(), "requires") {
+		t.Fatalf("expected 'requires' in stderr, got: %s", stderr.String())
+	}
+}
+
+func TestSelectInsufficientArgs(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	exitCode := run([]string{"select", "Auto"}, stdout, stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for insufficient args, got %d", exitCode)
+	}
+
+	if !strings.Contains(stderr.String(), "requires") {
+		t.Fatalf("expected 'requires' in stderr, got: %s", stderr.String())
+	}
+}
+
 // TestHelpCommand verifies help output includes all commands
 func TestHelpCommand(t *testing.T) {
 	stdout := new(bytes.Buffer)
@@ -297,6 +342,7 @@ func TestHelpCommand(t *testing.T) {
 		"system-proxy",
 		"groups",
 		"test",
+		"select",
 	}
 
 	for _, cmd := range commands {

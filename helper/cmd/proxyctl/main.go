@@ -110,6 +110,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	case "test":
 		return runTest(stdout, stderr)
 
+	case "select":
+		if len(args) < 3 {
+			fmt.Fprintf(stderr, "select requires <group> <proxy>\n")
+			return 2
+		}
+		return runSelect(args[1], args[2], stdout, stderr)
+
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", redact.String(args[0]))
 		printHelp(stderr)
@@ -167,6 +174,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl groups [list]")
 	fmt.Fprintln(w, "  proxyctl groups select <group> <proxy>")
 	fmt.Fprintln(w, "  proxyctl test")
+	fmt.Fprintln(w, "  proxyctl select <group> <proxy>")
 }
 
 func runCoreStart(stdout io.Writer, stderr io.Writer) int {
@@ -298,6 +306,10 @@ func runGroupsList(stdout io.Writer, stderr io.Writer) int {
 }
 
 func runGroupsSelect(group string, proxy string, stdout io.Writer, stderr io.Writer) int {
+	return runSelect(group, proxy, stdout, stderr)
+}
+
+func runSelect(group string, proxy string, stdout io.Writer, stderr io.Writer) int {
 	client := controller.NewClient("")
 	if err := client.SelectProxy(group, proxy); err != nil {
 		fmt.Fprintf(stderr, "select proxy: %v\n", err)
