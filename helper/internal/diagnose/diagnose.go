@@ -24,7 +24,7 @@ type Check struct {
 	Name         string `json:"name"`
 	Status       Status `json:"status"`
 	Message      string `json:"message"`
-	SuggestedFix string `json:"suggestedFix,omitempty"`
+	SuggestedFix string `json:"suggestedFix"`
 }
 
 func Run(p paths.RuntimePaths) Report {

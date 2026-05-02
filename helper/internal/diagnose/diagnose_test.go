@@ -55,20 +55,24 @@ func TestRunReportJSONShape(t *testing.T) {
 	}
 
 	var decoded struct {
-		App       string `json:"app"`
-		Milestone string `json:"milestone"`
-		Checks    []struct {
-			Name         string `json:"name"`
-			Status       string `json:"status"`
-			Message      string `json:"message"`
-			SuggestedFix string `json:"suggestedFix,omitempty"`
-		} `json:"checks"`
+		App       string                       `json:"app"`
+		Milestone string                       `json:"milestone"`
+		Checks    []map[string]json.RawMessage `json:"checks"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatalf("unmarshal report: %v", err)
 	}
 	if decoded.App != "ProxyCat" || decoded.Milestone != "milestone-1" || len(decoded.Checks) == 0 {
 		t.Fatalf("unexpected decoded report: %+v", decoded)
+	}
+
+	requiredFields := []string{"name", "status", "message", "suggestedFix"}
+	for i, check := range decoded.Checks {
+		for _, field := range requiredFields {
+			if _, ok := check[field]; !ok {
+				t.Fatalf("check %d missing JSON field %q: %s", i, field, payload)
+			}
+		}
 	}
 }
 
