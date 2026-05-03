@@ -453,6 +453,13 @@ func runModeStatusJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int 
 }
 
 func runModeSet(mode string, stdout io.Writer, stderr io.Writer) int {
+	switch mode {
+	case "rule", "global", "direct":
+	default:
+		fmt.Fprintf(stderr, "mode must be one of: rule, global, direct\n")
+		return 2
+	}
+
 	client := controller.NewClient("")
 	if err := client.SetMode(mode); err != nil {
 		fmt.Fprintf(stderr, "set mode: %v\n", err)
