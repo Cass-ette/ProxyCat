@@ -7,13 +7,15 @@ class StatusViewModel: ObservableObject {
     @Published var coreRunning = false
     @Published var corePID = 0
     @Published var systemProxyEnabled = false
-    @Published var currentMode = "Rule"
+    @Published var currentMode = "rule"
     @Published var currentGroup = ""
     @Published var currentNode = ""
+    @Published var proxyGroups: [ProxyGroup] = []
     @Published var lastError: String?
     @Published var isRefreshing = false
     @Published var testResult: TestResult?
     @Published var diagnoseReport: DiagnoseReport?
+    @Published var bootstrapStatus: String = ""
 
     private let helper = HelperClient.shared
     private var refreshTimer: Timer?
@@ -54,15 +56,24 @@ class StatusViewModel: ObservableObject {
             systemProxyEnabled = false
         }
 
+        let modeResult = await helper.getMode()
+        switch modeResult {
+        case .success(let mode):
+            currentMode = mode
+        case .failure:
+            currentMode = "rule"
+        }
+
         // Proxy groups for current selection
         let groupsResult = await helper.getProxyGroups()
         switch groupsResult {
         case .success(let groups):
-            if let firstGroup = groups.first {
-                currentGroup = firstGroup.name
-                currentNode = firstGroup.now
-            }
+            proxyGroups = groups
+            let selectedGroup = groups.first { $0.name == currentGroup } ?? groups.first
+            currentGroup = selectedGroup?.name ?? ""
+            currentNode = selectedGroup?.now ?? ""
         case .failure:
+            proxyGroups = []
             currentGroup = ""
             currentNode = ""
         }
@@ -108,6 +119,22 @@ class StatusViewModel: ObservableObject {
         await refreshStatus()
     }
 
+    func setMode(_ mode: String) async {
+        let result = await helper.setMode(mode)
+        if case .failure(let error) = result {
+            lastError = "Set mode failed: \(error.localizedDescription)"
+        }
+        await refreshStatus()
+    }
+
+    func selectProxy(group: String, proxy: String) async {
+        let result = await helper.selectProxy(group: group, proxy: proxy)
+        if case .failure(let error) = result {
+            lastError = "Select proxy failed: \(error.localizedDescription)"
+        }
+        await refreshStatus()
+    }
+
     func testConnection() async {
         let result = await helper.testConnection()
         switch result {
@@ -136,6 +163,21 @@ class StatusViewModel: ObservableObject {
         case .failure(let error):
             lastError = "Diagnose failed: \(error.localizedDescription)"
         }
+    }
+
+    func bootstrap(subscriptionURL: String) async {
+        bootstrapStatus = "正在启动..."
+        lastError = nil
+        testResult = nil
+        diagnoseReport = nil
+
+        let stream = await helper.bootstrap(subscriptionURL: subscriptionURL)
+
+        for await line in stream {
+            bootstrapStatus = line
+        }
+
+        await refreshStatus()
     }
 
     func openConfigFolder() {

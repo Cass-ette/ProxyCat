@@ -47,6 +47,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	switch args[0] {
 	case "diagnose":
 		return runDiagnose(args[1:], jsonOutput, stdout, stderr)
+	case "bootstrap":
+		if len(args) < 2 {
+			fmt.Fprintf(stderr, "bootstrap requires subscription URL\n")
+			return 2
+		}
+		return runBootstrap(args[1], stdout, stderr)
 	case "subscription":
 		if len(args) < 2 {
 			fmt.Fprintf(stderr, "subscription subcommand required: add, list, update\n")
@@ -68,12 +74,26 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "unknown subscription subcommand: %s\n", redact.String(args[1]))
 			return 2
 		}
+	case "config":
+		if len(args) < 2 {
+			fmt.Fprintf(stderr, "config subcommand required: generate\n")
+			return 2
+		}
+		switch args[1] {
+		case "generate":
+			return runConfigGenerate(stdout, stderr)
+		default:
+			fmt.Fprintf(stderr, "unknown config subcommand: %s\n", redact.String(args[1]))
+			return 2
+		}
 	case "core":
 		if len(args) < 2 {
 			fmt.Fprintf(stderr, "core subcommand required: start, stop, restart, status\n")
 			return 2
 		}
 		switch args[1] {
+		case "install":
+			return runCoreInstall(stdout, stderr)
 		case "start":
 			return runCoreStart(stdout, stderr)
 		case "stop":
@@ -101,6 +121,25 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return runSystemProxyStatusJSON(stdout, stderr, jsonOutput)
 		default:
 			fmt.Fprintf(stderr, "unknown system-proxy subcommand: %s\n", redact.String(args[1]))
+			return 2
+		}
+
+	case "mode":
+		if len(args) < 2 {
+			fmt.Fprintf(stderr, "mode subcommand required: status, set\n")
+			return 2
+		}
+		switch args[1] {
+		case "status":
+			return runModeStatusJSON(stdout, stderr, jsonOutput)
+		case "set":
+			if len(args) < 3 {
+				fmt.Fprintf(stderr, "mode set requires <rule|global|direct>\n")
+				return 2
+			}
+			return runModeSet(args[2], stdout, stderr)
+		default:
+			fmt.Fprintf(stderr, "unknown mode subcommand: %s\n", redact.String(args[1]))
 			return 2
 		}
 
@@ -139,6 +178,62 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 }
 
+func runBootstrap(url string, stdout io.Writer, stderr io.Writer) int {
+	fmt.Fprintf(stdout, "Saving subscription: %s\n", redact.URL(url))
+	if err := saveSingleSubscription(url); err != nil {
+		fmt.Fprintf(stderr, "save subscription: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintln(stdout, "Generating config...")
+	if exit := runConfigGenerate(stdout, stderr); exit != 0 {
+		return exit
+	}
+
+	fmt.Fprintln(stdout, "Ensuring Mihomo core...")
+	if exit := runCoreInstall(stdout, stderr); exit != 0 {
+		return exit
+	}
+
+	fmt.Fprintln(stdout, "Restarting core...")
+	if exit := runCoreRestart(stdout, stderr); exit != 0 {
+		return exit
+	}
+
+	if err := waitForController(8 * time.Second); err != nil {
+		fmt.Fprintf(stderr, "wait for controller: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintln(stdout, "Enabling system proxy...")
+	if exit := runSystemProxyOn(stdout, stderr); exit != 0 {
+		return exit
+	}
+
+	fmt.Fprintln(stdout, "Testing connection...")
+	if exit := runTestJSON(stdout, stderr, false); exit != 0 {
+		return exit
+	}
+
+	fmt.Fprintln(stdout, "ProxyCat is connected")
+	return 0
+}
+
+func waitForController(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	client := controller.NewClient("")
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if _, err := client.GetConfig(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return lastErr
+}
+
 func runDiagnose(args []string, jsonOutput bool, stdout io.Writer, stderr io.Writer) int {
 	for _, arg := range args {
 		fmt.Fprintf(stderr, "unknown diagnose flag: %s\n", redact.String(arg))
@@ -175,15 +270,34 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "ProxyCat proxyctl")
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  proxyctl diagnose [--json]")
+	fmt.Fprintln(w, "  proxyctl bootstrap <url>")
 	fmt.Fprintln(w, "  proxyctl subscription add <url>")
 	fmt.Fprintln(w, "  proxyctl subscription list")
 	fmt.Fprintln(w, "  proxyctl subscription update")
-	fmt.Fprintln(w, "  proxyctl core {start|stop|restart|status}")
+	fmt.Fprintln(w, "  proxyctl config generate")
+	fmt.Fprintln(w, "  proxyctl core {install|start|stop|restart|status}")
 	fmt.Fprintln(w, "  proxyctl system-proxy {on|off|status}")
+	fmt.Fprintln(w, "  proxyctl mode {status|set <rule|global|direct>}")
 	fmt.Fprintln(w, "  proxyctl groups [list]")
 	fmt.Fprintln(w, "  proxyctl groups select <group> <proxy>")
 	fmt.Fprintln(w, "  proxyctl test")
 	fmt.Fprintln(w, "  proxyctl select <group> <proxy>")
+}
+
+func runCoreInstall(stdout io.Writer, stderr io.Writer) int {
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "Installing Mihomo core...")
+	installedPath, err := core.InstallMihomo(runtimePaths.Mihomo)
+	if err != nil {
+		fmt.Fprintf(stderr, "install mihomo: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Mihomo installed: %s\n", installedPath)
+	return 0
 }
 
 func runCoreStart(stdout io.Writer, stderr io.Writer) int {
@@ -318,6 +432,36 @@ func runSystemProxyStatusJSON(stdout io.Writer, stderr io.Writer, jsonOutput boo
 	return 0
 }
 
+func runModeStatusJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
+	client := controller.NewClient("")
+	cfg, err := client.GetConfig()
+	if err != nil {
+		fmt.Fprintf(stderr, "get mode: %v\n", err)
+		return 1
+	}
+
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(map[string]string{"mode": cfg.Mode}); err != nil {
+			fmt.Fprintf(stderr, "encode mode: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	fmt.Fprintf(stdout, "Mode: %s\n", cfg.Mode)
+	return 0
+}
+
+func runModeSet(mode string, stdout io.Writer, stderr io.Writer) int {
+	client := controller.NewClient("")
+	if err := client.SetMode(mode); err != nil {
+		fmt.Fprintf(stderr, "set mode: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Mode set to %s\n", mode)
+	return 0
+}
+
 func runGroupsList(stdout io.Writer, stderr io.Writer) int {
 	return runGroupsJSON(stdout, stderr, false)
 }
@@ -410,6 +554,28 @@ func runTestJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 		return 1
 	}
 	return 0
+}
+
+func saveSingleSubscription(url string) error {
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		return fmt.Errorf("resolve paths: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(runtimePaths.SubscriptionsJSON), 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	records, err := subscription.Load(runtimePaths.SubscriptionsJSON)
+	if err != nil {
+		return fmt.Errorf("load subscriptions: %w", err)
+	}
+	for i, r := range records {
+		if r.URL == url {
+			records[i].LastUpdate = time.Now()
+			return subscription.Save(runtimePaths.SubscriptionsJSON, records)
+		}
+	}
+	records = []subscription.Record{{URL: url, Name: "Subscription", LastUpdate: time.Now()}}
+	return subscription.Save(runtimePaths.SubscriptionsJSON, records)
 }
 
 func runSubscriptionAdd(url string, stdout io.Writer, stderr io.Writer) int {
@@ -509,15 +675,30 @@ func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 		format, confidence := config.DetectFormat(content)
 		fmt.Fprintf(stdout, "Subscription %d: detected %s (confidence: %s)\n", i+1, format, confidence)
 
-		// Validate if it's a valid config
-		result := config.Validate(content)
-		if result.Valid {
-			fmt.Fprintf(stdout, "  Valid: %d proxies, %d groups, %d rules\n", result.ProxyCount, result.GroupCount, result.RuleCount)
-			// Only update LastUpdate on successful validation
-			records[i].LastUpdate = time.Now()
-		} else {
-			fmt.Fprintf(stdout, "  Invalid: %s\n", result.Message)
-			// Skip updating timestamp for failed validation
+		// Validate based on format
+		switch format {
+		case config.FormatClashYAML:
+			result := config.Validate(content)
+			if result.Valid {
+				fmt.Fprintf(stdout, "  Valid: %d proxies, %d groups, %d rules\n", result.ProxyCount, result.GroupCount, result.RuleCount)
+				records[i].LastUpdate = time.Now()
+			} else {
+				fmt.Fprintf(stdout, "  Invalid: %s\n", result.Message)
+				continue
+			}
+		case config.FormatBase64List, config.FormatPlainList:
+			// For URI list formats, count nodes instead of validating YAML structure
+			// These formats need to be converted to YAML config separately
+			nodeCount := config.CountNodes(content, format)
+			if nodeCount > 0 {
+				fmt.Fprintf(stdout, "  Valid: %d nodes (requires config generation)\n", nodeCount)
+				records[i].LastUpdate = time.Now()
+			} else {
+				fmt.Fprintf(stdout, "  Invalid: no valid nodes found\n")
+				continue
+			}
+		default:
+			fmt.Fprintf(stdout, "  Unknown format, skipping validation\n")
 			continue
 		}
 	}
@@ -527,5 +708,71 @@ func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
+	return 0
+}
+
+func runConfigGenerate(stdout io.Writer, stderr io.Writer) int {
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+
+	records, err := subscription.Load(runtimePaths.SubscriptionsJSON)
+	if err != nil {
+		fmt.Fprintf(stderr, "load subscriptions: %v\n", err)
+		return 1
+	}
+
+	if len(records) == 0 {
+		fmt.Fprintln(stderr, "No subscriptions found. Add a subscription first.")
+		return 1
+	}
+
+	// For now, use the first subscription
+	r := records[0]
+	fmt.Fprintf(stdout, "Generating config from subscription: %s\n", redact.URL(r.URL))
+
+	client := &http.Client{}
+	content, err := subscription.Download(client, r.URL, "ProxyCat/1.0")
+	if err != nil {
+		fmt.Fprintf(stderr, "download subscription: %v\n", err)
+		return 1
+	}
+
+	format, _ := config.DetectFormat(content)
+
+	var configYAML string
+	switch format {
+	case config.FormatClashYAML:
+		configYAML, err = config.NormalizeClashYAML(content)
+		if err != nil {
+			fmt.Fprintf(stderr, "normalize YAML: %v\n", err)
+			return 1
+		}
+	case config.FormatBase64List, config.FormatPlainList:
+		// Convert URI list to YAML
+		configYAML, err = config.ConvertURIToYAML(content, format)
+		if err != nil {
+			fmt.Fprintf(stderr, "convert to YAML: %v\n", err)
+			return 1
+		}
+	default:
+		fmt.Fprintf(stderr, "Unknown subscription format\n")
+		return 1
+	}
+
+	if err := os.MkdirAll(filepath.Dir(runtimePaths.ConfigYAML), 0o755); err != nil {
+		fmt.Fprintf(stderr, "create config directory: %v\n", err)
+		return 1
+	}
+
+	// Write config file
+	if err := os.WriteFile(runtimePaths.ConfigYAML, []byte(configYAML), 0644); err != nil {
+		fmt.Fprintf(stderr, "write config: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "Config generated: %s\n", runtimePaths.ConfigYAML)
 	return 0
 }
