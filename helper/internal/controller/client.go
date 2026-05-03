@@ -65,6 +65,10 @@ type selectProxyRequest struct {
 	Name string `json:"name"`
 }
 
+type configPatchRequest struct {
+	Mode string `json:"mode"`
+}
+
 // NewClient creates a new controller client with the given base URL.
 // The base URL should include the protocol and host (e.g., "http://127.0.0.1:9090").
 // If baseURL is empty, it defaults to http://127.0.0.1:9090.
@@ -133,6 +137,40 @@ func (c *Client) GetConfig() (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+func (c *Client) SetMode(mode string) error {
+	switch mode {
+	case "rule", "global", "direct":
+	default:
+		return fmt.Errorf("mode must be one of: rule, global, direct")
+	}
+
+	body, err := json.Marshal(configPatchRequest{Mode: mode})
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("PATCH", c.baseURL+"/configs", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.secret != "" {
+		req.Header.Set("Authorization", "Bearer "+c.secret)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	return nil
 }
 
 // GetProxies retrieves all proxies from the controller.

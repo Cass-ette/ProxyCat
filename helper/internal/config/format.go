@@ -133,3 +133,61 @@ func looksLikePlainList(content []byte) bool {
 	}
 	return false
 }
+
+// CountNodes counts the number of valid proxy nodes in subscription content.
+// For base64 lists, it decodes and counts. For plain lists, it counts directly.
+func CountNodes(content []byte, format Format) int {
+	if len(content) == 0 {
+		return 0
+	}
+
+	switch format {
+	case FormatBase64List:
+		return countBase64Nodes(content)
+	case FormatPlainList:
+		return countPlainNodes(content)
+	default:
+		return 0
+	}
+}
+
+func countBase64Nodes(content []byte) int {
+	lines := bytes.Split(content, []byte("\n"))
+	count := 0
+
+	for _, line := range lines {
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+
+		// Try to decode as base64
+		decoded, err := base64.StdEncoding.DecodeString(string(trimmed))
+		if err == nil && len(decoded) > 0 {
+			// Check if decoded content looks like node URIs
+			if nodeURIPattern.Match(decoded) {
+				count++
+			}
+		}
+	}
+
+	return count
+}
+
+func countPlainNodes(content []byte) int {
+	lines := bytes.Split(content, []byte("\n"))
+	count := 0
+
+	for _, line := range lines {
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+
+		if nodeURIPattern.Match(trimmed) {
+			count++
+		}
+	}
+
+	return count
+}

@@ -177,6 +177,48 @@ func TestSystemProxyUnknownSubcommand(t *testing.T) {
 	}
 }
 
+func TestModeMissingSubcommand(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	exitCode := run([]string{"mode"}, stdout, stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for missing subcommand, got %d", exitCode)
+	}
+
+	if !strings.Contains(stderr.String(), "mode subcommand required") {
+		t.Fatalf("expected mode subcommand error, got: %s", stderr.String())
+	}
+}
+
+func TestModeSetMissingArgument(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	exitCode := run([]string{"mode", "set"}, stdout, stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for missing mode, got %d", exitCode)
+	}
+
+	if !strings.Contains(stderr.String(), "mode set requires") {
+		t.Fatalf("expected mode set requires error, got: %s", stderr.String())
+	}
+}
+
+func TestModeSetRejectsInvalidMode(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	exitCode := run([]string{"mode", "set", "invalid"}, stdout, stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for invalid mode, got %d", exitCode)
+	}
+
+	if !strings.Contains(stderr.String(), "mode must be one of") {
+		t.Fatalf("expected invalid mode message, got: %s", stderr.String())
+	}
+}
+
 // TestGroupsCommands tests the groups subcommands
 func TestGroupsListCommand(t *testing.T) {
 	stdout := new(bytes.Buffer)
@@ -191,9 +233,11 @@ func TestGroupsListCommand(t *testing.T) {
 		t.Fatalf("groups command should be recognized: %s", stderr.String())
 	}
 
-	// Output might contain proxy groups or error about connection
+	// Output might contain proxy groups or error about connection.
+	// A real local Mihomo may return non-English group names, so accept the stable
+	// listing shape instead of requiring the English word "group".
 	output := stdout.String() + stderr.String()
-	if !strings.Contains(output, "group") && !strings.Contains(output, "connection") && !strings.Contains(output, "No proxy") {
+	if !strings.Contains(output, "current=") && !strings.Contains(output, "connection") && !strings.Contains(output, "No proxy") {
 		t.Fatalf("unexpected output: %s", output)
 	}
 

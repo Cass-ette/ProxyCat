@@ -2,52 +2,68 @@ import SwiftUI
 
 struct MenuContentView: View {
     @ObservedObject var viewModel: StatusViewModel
+    @State private var subscriptionURL: String = ""
+    @State private var isBootstrapping: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header - ProxyCat On/Off
-            headerSection
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                // Header - ProxyCat On/Off
+                headerSection
 
-            Divider()
-
-            // Status section
-            statusSection
-
-            if hasFeedback {
                 Divider()
-                feedbackSection
+
+                // Quick Start section - 一键启动
+                quickStartSection
+
+                Divider()
+
+                // Status section
+                statusSection
+
+                Divider()
+
+                // Controls section
+                controlsSection
+
+                if hasFeedback {
+                    Divider()
+                    feedbackSection
+                }
+
+                Divider()
+
+                // Actions section
+                actionsSection
+
+                Divider()
+
+                // Diagnostics
+                diagnosticsSection
+
+                Divider()
+
+                // Open section
+                openSection
+
+                Divider()
+
+                // Quit
+                quitButton
             }
-
-            Divider()
-
-            // Actions section
-            actionsSection
-
-            Divider()
-
-            // Diagnostics
-            diagnosticsSection
-
-            Divider()
-
-            // Open section
-            openSection
-
-            Divider()
-
-            // Quit
-            quitButton
         }
         .background(VisualEffectView(material: .menu, blendingMode: .behindWindow))
         .cornerRadius(8)
         .shadow(radius: 4)
+        .frame(width: 320)
+        .frame(maxHeight: 640)
     }
 
     private var headerSection: some View {
         HStack {
             Image(systemName: viewModel.systemProxyEnabled ? "cat.fill" : "cat")
                 .foregroundColor(viewModel.systemProxyEnabled ? .green : .secondary)
-            Text("ProxyCat: \(viewModel.systemProxyEnabled ? "On" : "Off")")
+            Text(viewModel.systemProxyEnabled ? "ProxyCat: 已连接" : "ProxyCat: 未连接")
                 .font(.headline)
             Spacer()
         }
@@ -55,20 +71,157 @@ struct MenuContentView: View {
         .padding(.vertical, 12)
     }
 
-    private var statusSection: some View {
+    private var quickStartSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Status")
+            Text("快速开始")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
 
-            StatusRow(label: "Core", value: viewModel.coreRunning ? "Running" : "Stopped")
-            StatusRow(label: "System Proxy", value: viewModel.systemProxyEnabled ? "On" : "Off")
-            StatusRow(label: "Mode", value: viewModel.currentMode)
-            StatusRow(label: "Current", value: "\(viewModel.currentGroup) → \(viewModel.currentNode)")
+            // 订阅链接输入框
+            TextField("粘贴订阅链接", text: $subscriptionURL)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .font(.system(size: 12))
+                .padding(.horizontal, 16)
+                .disableAutocorrection(true)
+
+            // 一键启动按钮
+            Button(action: {
+                guard !subscriptionURL.isEmpty else { return }
+                isBootstrapping = true
+                Task {
+                    await viewModel.bootstrap(subscriptionURL: subscriptionURL)
+                    isBootstrapping = false
+                }
+            }) {
+                HStack {
+                    if isBootstrapping {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                            .frame(width: 20)
+                    } else {
+                        Image(systemName: "play.fill")
+                            .frame(width: 20)
+                    }
+                    Text(isBootstrapping ? "启动中..." : "一键启动")
+                    Spacer()
+                }
+            }
+            .buttonStyle(PlainButtonStyle())
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(Color.accentColor.opacity(0.15))
+            .cornerRadius(6)
+            .padding(.horizontal, 16)
+            .disabled(isBootstrapping || subscriptionURL.isEmpty)
+
+            if isBootstrapping {
+                Text(viewModel.bootstrapStatus)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 16)
+                    .lineLimit(1)
+            }
         }
         .padding(.bottom, 8)
+    }
+
+    private var statusSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("状态")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+            StatusRow(label: "代理引擎", value: viewModel.coreRunning ? "运行中" : "已停止")
+            StatusRow(label: "系统代理", value: viewModel.systemProxyEnabled ? "已开启" : "已关闭")
+            StatusRow(label: "代理模式", value: modeLabel(viewModel.currentMode))
+            StatusRow(label: "当前节点", value: viewModel.currentNode.isEmpty ? "-" : viewModel.currentNode)
+        }
+        .padding(.bottom, 8)
+    }
+
+    private var controlsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("控制")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+            modeControls
+
+            if viewModel.proxyGroups.isEmpty {
+                Text("暂无节点，请先一键启动或更新订阅")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 16)
+            } else {
+                proxyGroupControls
+            }
+        }
+        .padding(.bottom, 8)
+    }
+
+    private var modeControls: some View {
+        HStack(spacing: 8) {
+            ForEach([("rule", "规则"), ("global", "全局"), ("direct", "直连")], id: \.0) { mode, title in
+                Button(action: {
+                    Task { await viewModel.setMode(mode) }
+                }) {
+                    Text(title)
+                        .font(.system(size: 12, weight: viewModel.currentMode == mode ? .semibold : .regular))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(viewModel.currentMode == mode ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.08))
+                        .cornerRadius(6)
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var proxyGroupControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(viewModel.proxyGroups) { group in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(group.name)
+                            .font(.system(size: 12, weight: .semibold))
+                        Spacer()
+                        Text(group.now.isEmpty ? "-" : group.now)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 16)
+
+                    ForEach(group.all, id: \.self) { proxy in
+                        Button(action: {
+                            Task { await viewModel.selectProxy(group: group.name, proxy: proxy) }
+                        }) {
+                            HStack {
+                                Image(systemName: group.now == proxy ? "checkmark.circle.fill" : "circle")
+                                    .frame(width: 20)
+                                    .foregroundColor(group.now == proxy ? .accentColor : .secondary)
+                                Text(proxy)
+                                    .lineLimit(1)
+                                Spacer()
+                            }
+                            .font(.system(size: 12))
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 3)
+                        .contentShape(Rectangle())
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
     }
 
     private var hasFeedback: Bool {
@@ -77,7 +230,7 @@ struct MenuContentView: View {
 
     private var feedbackSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Results")
+            Text("结果")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 16)
@@ -85,13 +238,13 @@ struct MenuContentView: View {
 
             if let testResult = viewModel.testResult {
                 StatusRow(
-                    label: "Test",
-                    value: "Google \(statusText(testResult.googleOK)), GitHub \(statusText(testResult.githubOK))"
+                    label: "连接测试",
+                    value: "Google: \(testResult.googleOK ? "✓" : "✗"), GitHub: \(testResult.githubOK ? "✓" : "✗")"
                 )
             }
 
             if let report = viewModel.diagnoseReport {
-                StatusRow(label: "Diagnose", value: diagnoseSummary(report))
+                StatusRow(label: "诊断", value: diagnoseSummary(report))
             }
 
             if let lastError = viewModel.lastError {
@@ -106,7 +259,18 @@ struct MenuContentView: View {
     }
 
     private func statusText(_ ok: Bool) -> String {
-        ok ? "OK" : "Fail"
+        ok ? "✓" : "✗"
+    }
+
+    private func modeLabel(_ mode: String) -> String {
+        switch mode {
+        case "global":
+            return "全局"
+        case "direct":
+            return "直连"
+        default:
+            return "规则"
+        }
     }
 
     private func diagnoseSummary(_ report: DiagnoseReport) -> String {
@@ -114,41 +278,41 @@ struct MenuContentView: View {
         let warnCount = report.checks.filter { $0.status.lowercased() == "warn" }.count
 
         if failCount > 0 {
-            return "\(failCount) failed, \(warnCount) warnings"
+            return "\(failCount) 失败, \(warnCount) 警告"
         }
         if warnCount > 0 {
-            return "\(warnCount) warnings"
+            return "\(warnCount) 警告"
         }
-        return "\(report.checks.count) checks passed"
+        return "全部通过"
     }
 
     private var actionsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Actions")
+            Text("操作")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
 
             if viewModel.systemProxyEnabled {
-                MenuButton("Turn System Proxy Off", icon: "network.slash") {
+                MenuButton("关闭系统代理", icon: "network.slash") {
                     Task { await viewModel.disableSystemProxy() }
                 }
             } else {
-                MenuButton("Turn System Proxy On", icon: "network") {
+                MenuButton("开启系统代理", icon: "network") {
                     Task { await viewModel.enableSystemProxy() }
                 }
             }
 
-            MenuButton("Update Subscription", icon: "arrow.clockwise") {
+            MenuButton("更新订阅", icon: "arrow.clockwise") {
                 Task { await viewModel.updateSubscription() }
             }
 
-            MenuButton("Test Connection", icon: "checkmark.shield") {
+            MenuButton("测试连接", icon: "checkmark.shield") {
                 Task { await viewModel.testConnection() }
             }
 
-            MenuButton("Restart Core", icon: "arrow.counterclockwise") {
+            MenuButton("重启代理引擎", icon: "arrow.counterclockwise") {
                 Task { await viewModel.restartCore() }
             }
         }
@@ -157,13 +321,13 @@ struct MenuContentView: View {
 
     private var diagnosticsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Diagnostics")
+            Text("诊断")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
 
-            MenuButton("Run Diagnose", icon: "stethoscope") {
+            MenuButton("运行诊断", icon: "stethoscope") {
                 Task { await viewModel.runDiagnose() }
             }
         }
@@ -172,11 +336,11 @@ struct MenuContentView: View {
 
     private var openSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            MenuButton("Config Folder", icon: "folder") {
+            MenuButton("配置文件夹", icon: "folder") {
                 viewModel.openConfigFolder()
             }
 
-            MenuButton("Logs", icon: "doc.text.magnifyingglass") {
+            MenuButton("日志", icon: "doc.text.magnifyingglass") {
                 viewModel.openLogs()
             }
         }
@@ -184,7 +348,7 @@ struct MenuContentView: View {
     }
 
     private var quitButton: some View {
-        MenuButton("Quit", icon: "xmark.circle") {
+        MenuButton("退出", icon: "xmark.circle") {
             NSApplication.shared.terminate(nil)
         }
         .padding(.horizontal, 16)

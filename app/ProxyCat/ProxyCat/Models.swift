@@ -23,7 +23,13 @@ struct TestResult: Codable {
     let error: String?
 }
 
-struct ProxyGroup: Codable {
+struct ModeStatus: Codable {
+    let mode: String
+}
+
+struct ProxyGroup: Codable, Identifiable {
+    var id: String { name }
+
     let name: String
     let type: String
     let now: String

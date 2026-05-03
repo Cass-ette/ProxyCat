@@ -21,6 +21,7 @@ class MenuBarController: NSObject, NSWindowDelegate {
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(toggleMenu)
+            button.imagePosition = .imageLeading
             setIcon("cat", accessibilityDescription: "ProxyCat")
         }
     }
@@ -34,9 +35,11 @@ class MenuBarController: NSObject, NSWindowDelegate {
     }
 
     private func showMenu() {
+        let windowWidth: CGFloat = 320
+        let windowHeight: CGFloat = 640
         let hostingController = NSHostingController(
             rootView: MenuContentView(viewModel: viewModel)
-                .frame(width: 280)
+                .frame(width: windowWidth)
         )
 
         let window = NSWindow(contentViewController: hostingController)
@@ -46,14 +49,22 @@ class MenuBarController: NSObject, NSWindowDelegate {
         window.level = .statusBar
         window.delegate = self
 
-        // Position window below status bar icon
+        // Position the whole window below the menu bar item, clamped to the visible screen.
         if let button = statusItem.button {
             let buttonRect = button.convert(button.bounds, to: nil)
             let screenRect = button.window?.convertToScreen(buttonRect) ?? buttonRect
-            let windowWidth: CGFloat = 280
-            let windowHeight: CGFloat = 400
-            let x = screenRect.midX - windowWidth / 2
-            let y = screenRect.minY - 5
+            let visibleFrame = button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? screenRect
+            let margin: CGFloat = 8
+
+            let rawX = screenRect.midX - windowWidth / 2
+            let minX = visibleFrame.minX + margin
+            let maxX = visibleFrame.maxX - windowWidth - margin
+            let x = min(max(rawX, minX), maxX)
+
+            let rawY = screenRect.minY - windowHeight - margin
+            let minY = visibleFrame.minY + margin
+            let y = max(rawY, minY)
+
             window.setFrame(NSRect(x: x, y: y, width: windowWidth, height: windowHeight), display: true)
         }
 
@@ -90,11 +101,12 @@ class MenuBarController: NSObject, NSWindowDelegate {
         guard let button = statusItem.button else { return }
         if let image = NSImage(systemSymbolName: systemName, accessibilityDescription: accessibilityDescription) {
             image.size = NSSize(width: 18, height: 18)
+            image.isTemplate = true
             button.image = image
-            button.title = ""
         } else {
             button.image = nil
-            button.title = "PC"
         }
+        button.title = " ProxyCat"
+        button.toolTip = accessibilityDescription
     }
 }

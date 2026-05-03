@@ -169,6 +169,23 @@ actor HelperClient {
         }
     }
 
+    func getMode() async -> Result<String, HelperError> {
+        let result = await runCommand(["mode", "status", "--json"])
+        return result.flatMap { data in
+            do {
+                let status = try JSONDecoder().decode(ModeStatus.self, from: data)
+                return .success(status.mode)
+            } catch {
+                return .failure(.decodingFailed(error))
+            }
+        }
+    }
+
+    func setMode(_ mode: String) async -> Result<Void, HelperError> {
+        let result = await runCommand(["mode", "set", mode])
+        return result.map { _ in () }
+    }
+
     func getProxyGroups() async -> Result<[ProxyGroup], HelperError> {
         let result = await runCommand(["groups", "list", "--json"])
         return result.flatMap { data in
@@ -185,8 +202,58 @@ actor HelperClient {
     }
 
     func selectProxy(group: String, proxy: String) async -> Result<Void, HelperError> {
-        let result = await runCommand(["select", group, proxy])
+        let result = await runCommand(["groups", "select", group, proxy])
         return result.map { _ in () }
+    }
+
+    func bootstrap(subscriptionURL: String) -> AsyncStream<String> {
+        AsyncStream { continuation in
+            Task {
+                guard let executable = getProxyctlPath() else {
+                    continuation.yield("proxyctl not found")
+                    continuation.finish()
+                    return
+                }
+
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: executable)
+                task.arguments = ["bootstrap", subscriptionURL]
+
+                let outputPipe = Pipe()
+                let errorPipe = Pipe()
+                task.standardOutput = outputPipe
+                task.standardError = errorPipe
+
+                outputPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !line.isEmpty {
+                        continuation.yield(line)
+                    }
+                }
+
+                errorPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !line.isEmpty {
+                        continuation.yield(line)
+                    }
+                }
+
+                task.terminationHandler = { _ in
+                    outputPipe.fileHandleForReading.readabilityHandler = nil
+                    errorPipe.fileHandleForReading.readabilityHandler = nil
+                    continuation.finish()
+                }
+
+                do {
+                    try task.run()
+                } catch {
+                    continuation.yield("Failed to run: \(error.localizedDescription)")
+                    continuation.finish()
+                }
+            }
+        }
     }
 
 }
