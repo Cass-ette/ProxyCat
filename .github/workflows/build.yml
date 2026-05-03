@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-helper:
+    name: Build Go Helper
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '^1.21'
+
+      - name: Build proxyctl
+        working-directory: helper
+        run: |
+          go build -o proxyctl ./cmd/proxyctl
+
+      - name: Run Go tests
+        working-directory: helper
+        run: |
+          go test ./... -v
+
+  build-app:
+    name: Build Swift App
+    runs-on: macos-latest
+    needs: build-helper
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '^1.21'
+
+      - name: Build proxyctl universal binary
+        run: |
+          cd helper
+          GOOS=darwin GOARCH=amd64 go build -o ../app/ProxyCat/ProxyCat/Resources/proxyctl-amd64 ./cmd/proxyctl
+          GOOS=darwin GOARCH=arm64 go build -o ../app/ProxyCat/ProxyCat/Resources/proxyctl-arm64 ./cmd/proxyctl
+          cd ../app/ProxyCat/ProxyCat/Resources
+          lipo -create proxyctl-amd64 proxyctl-arm64 -output proxyctl
+          rm proxyctl-amd64 proxyctl-arm64
+          chmod +x proxyctl
+
+      - name: Build Xcode project
+        run: |
+          cd app/ProxyCat
+          xcodebuild \
+            -project ProxyCat.xcodeproj \
+            -scheme ProxyCat \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Verify app bundle
+        run: |
+          ls -la app/ProxyCat/build/Build/Products/Release/ProxyCat.app
+          file app/ProxyCat/build/Build/Products/Release/ProxyCat.app/Contents/Resources/proxyctl
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProxyCat-app
+          path: app/ProxyCat/build/Build/Products/Release/ProxyCat.app
+          retention-days: 7
