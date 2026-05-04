@@ -123,7 +123,7 @@ ProxyCat MVP does not include:
 
 ## License
 
-[License TBD - see LICENSE file]
+License TBD. All rights reserved until a license is chosen. See [LICENSE](LICENSE).
 
 ## Contributing
 
