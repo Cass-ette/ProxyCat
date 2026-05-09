@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -14,22 +15,17 @@ import (
 // Additional args can be passed after the log path.
 // Returns the process PID or an error.
 func Start(binPath, configPath, logPath string, extraArgs ...string) (int, error) {
-	// Open log file for append (create if doesn't exist)
 	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return 0, fmt.Errorf("failed to open log file: %w", err)
 	}
 	defer logFile.Close()
 
-	// Build command arguments: -f configPath followed by any extra args
 	args := append([]string{"-f", configPath}, extraArgs...)
-
-	// Create command
 	cmd := exec.Command(binPath, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
-	// Start the process
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("failed to start process: %w", err)
 	}
@@ -38,7 +34,6 @@ func Start(binPath, configPath, logPath string, extraArgs ...string) (int, error
 }
 
 // Stop terminates the process with the given PID.
-// Returns an error if the process cannot be found or killed.
 func Stop(pid int) error {
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -53,18 +48,20 @@ func Stop(pid int) error {
 }
 
 // Status checks if the Mihomo process is currently running.
-// Uses pgrep -x mihomo to find the process.
-// If multiple processes exist, returns the first one (oldest).
 // Returns (running bool, pid int, err error).
 func Status() (bool, int, error) {
-	// Run pgrep -x mihomo to find the process
+	if runtime.GOOS == "windows" {
+		return windowsStatus()
+	}
+	return unixStatus()
+}
+
+func unixStatus() (bool, int, error) {
 	output, err := exec.Command("pgrep", "-x", "mihomo").Output()
 	if err != nil {
-		// No process found
 		return false, 0, nil
 	}
 
-	// Parse PID from output (handle multiple lines - take first)
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	if len(lines) == 0 || lines[0] == "" {
 		return false, 0, nil
@@ -77,4 +74,28 @@ func Status() (bool, int, error) {
 	}
 
 	return true, pid, nil
+}
+
+func windowsStatus() (bool, int, error) {
+	output, err := exec.Command("tasklist", "/FI", "IMAGENAME eq mihomo.exe", "/FO", "CSV", "/NH").Output()
+	if err != nil {
+		return false, 0, nil
+	}
+
+	line := strings.TrimSpace(string(output))
+	if !strings.Contains(line, "mihomo.exe") {
+		return false, 0, nil
+	}
+
+	// CSV format: "mihomo.exe","12345","Console","1","5,632 K"
+	parts := strings.Split(line, ",")
+	if len(parts) >= 2 {
+		pidStr := strings.Trim(parts[1], "\"")
+		pid, err := strconv.Atoi(pidStr)
+		if err == nil {
+			return true, pid, nil
+		}
+	}
+
+	return true, 0, nil
 }
