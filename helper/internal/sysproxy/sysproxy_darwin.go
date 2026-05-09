@@ -1,3 +1,5 @@
+//go:build darwin
+
 // Package sysproxy provides macOS system proxy control.
 package sysproxy
 
