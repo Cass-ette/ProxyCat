@@ -1,9 +1,12 @@
 package paths
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestForHomeBuildsProxyCatRuntimePaths(t *testing.T) {
-	p := ForHome("/Users/example")
+	p := ForHome("/Users/example/Library/Application Support")
 
 	wantBase := "/Users/example/Library/Application Support/ProxyCat"
 	if p.Base != wantBase {
@@ -11,12 +14,6 @@ func TestForHomeBuildsProxyCatRuntimePaths(t *testing.T) {
 	}
 	if p.Bin != wantBase+"/bin" {
 		t.Fatalf("Bin = %q", p.Bin)
-	}
-	if p.Proxyctl != wantBase+"/bin/proxyctl" {
-		t.Fatalf("Proxyctl = %q", p.Proxyctl)
-	}
-	if p.Mihomo != wantBase+"/bin/mihomo" {
-		t.Fatalf("Mihomo = %q", p.Mihomo)
 	}
 	if p.Config != wantBase+"/config" {
 		t.Fatalf("Config = %q", p.Config)
@@ -56,5 +53,39 @@ func TestDefaultUsesUserHomeDir(t *testing.T) {
 	}
 	if p.Base != "/tmp/proxycat-home/Library/Application Support/ProxyCat" {
 		t.Fatalf("Base = %q", p.Base)
+	}
+}
+
+func TestForHomeWindowsPath(t *testing.T) {
+	p := ForHome("C:\\Users\\test\\AppData\\Local")
+
+	wantBase := filepath.Join("C:\\Users\\test\\AppData\\Local", "ProxyCat")
+	if p.Base != wantBase {
+		t.Fatalf("Base = %q, want %q", p.Base, wantBase)
+	}
+	if p.Config != filepath.Join(wantBase, "config") {
+		t.Fatalf("Config = %q", p.Config)
+	}
+	if p.Logs != filepath.Join(wantBase, "logs") {
+		t.Fatalf("Logs = %q", p.Logs)
+	}
+	if p.Reports != filepath.Join(wantBase, "reports") {
+		t.Fatalf("Reports = %q", p.Reports)
+	}
+}
+
+func TestPlatformBaseDir(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", "C:\\Users\\test\\AppData\\Local")
+	dir := PlatformBaseDir("windows")
+	want := "C:\\Users\\test\\AppData\\Local"
+	if dir != want {
+		t.Fatalf("PlatformBaseDir(windows) = %q, want %q", dir, want)
+	}
+
+	t.Setenv("HOME", "/tmp/proxycat-home")
+	dir = PlatformBaseDir("darwin")
+	want = "/tmp/proxycat-home/Library/Application Support"
+	if dir != want {
+		t.Fatalf("PlatformBaseDir(darwin) = %q, want %q", dir, want)
 	}
 }
