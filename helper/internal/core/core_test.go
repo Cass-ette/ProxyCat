@@ -89,7 +89,13 @@ func TestStatusNotRunning(t *testing.T) {
 		t.Skip("skipping on Windows")
 	}
 
-	// Test when no mihomo process is running
+	tmpDir := t.TempDir()
+	fakePgrep := filepath.Join(tmpDir, "pgrep")
+	if err := os.WriteFile(fakePgrep, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("failed to create fake pgrep: %v", err)
+	}
+	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	running, pid, err := Status()
 	if err != nil {
 		t.Fatalf("Status returned error: %v", err)
