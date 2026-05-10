@@ -311,6 +311,7 @@ struct MenuContentView: View {
 
             if let report = viewModel.diagnoseReport {
                 StatusRow(label: "诊断", value: diagnoseSummary(report))
+                diagnoseDetails(report)
             }
 
             if let lastError = viewModel.lastError {
@@ -350,6 +351,60 @@ struct MenuContentView: View {
             return "\(warnCount) 警告"
         }
         return "全部通过"
+    }
+
+    private func diagnoseDetails(_ report: DiagnoseReport) -> some View {
+        let issues = report.checks.filter { $0.status.lowercased() != "pass" }
+        return VStack(alignment: .leading, spacing: 6) {
+            ForEach(issues, id: \.name) { check in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(diagnoseStatusLabel(check.status))
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(diagnoseStatusColor(check.status))
+                        Text(check.name)
+                            .font(.system(size: 11, weight: .semibold))
+                        Spacer()
+                    }
+                    Text(check.message)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let suggestedFix = check.suggestedFix, !suggestedFix.isEmpty {
+                        Text("建议：\(suggestedFix)")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(8)
+                .background(diagnoseStatusColor(check.status).opacity(0.12))
+                .cornerRadius(6)
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func diagnoseStatusLabel(_ status: String) -> String {
+        switch status.lowercased() {
+        case "fail":
+            return "失败"
+        case "warn":
+            return "警告"
+        default:
+            return status
+        }
+    }
+
+    private func diagnoseStatusColor(_ status: String) -> Color {
+        switch status.lowercased() {
+        case "fail":
+            return .red
+        case "warn":
+            return .orange
+        default:
+            return .secondary
+        }
     }
 
     private var actionsSection: some View {

@@ -25,8 +25,8 @@ func TestRunReportsStaticLocalChecks(t *testing.T) {
 	if report.Milestone != "milestone-1" {
 		t.Fatalf("Milestone = %q", report.Milestone)
 	}
-	if len(report.Checks) != 5 {
-		t.Fatalf("len(Checks) = %d, want 5", len(report.Checks))
+	if len(report.Checks) != 4 {
+		t.Fatalf("len(Checks) = %d, want 4", len(report.Checks))
 	}
 
 	checks := checksByName(report.Checks)
@@ -42,8 +42,8 @@ func TestRunReportsStaticLocalChecks(t *testing.T) {
 	if checks["mihomo-binary"].Status != StatusWarn {
 		t.Fatalf("mihomo-binary status = %q", checks["mihomo-binary"].Status)
 	}
-	if checks["network-checks"].Status != StatusWarn {
-		t.Fatalf("network-checks status = %q", checks["network-checks"].Status)
+	if _, ok := checks["network-checks"]; ok {
+		t.Fatal("network-checks placeholder warning should not be reported")
 	}
 }
 

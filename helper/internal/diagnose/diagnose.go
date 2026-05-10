@@ -36,12 +36,6 @@ func Run(p paths.RuntimePaths) Report {
 			checkSubscriptionStorage(p),
 			checkGeneratedConfig(p),
 			checkMihomoBinary(p),
-			{
-				Name:         "network-checks",
-				Status:       StatusWarn,
-				Message:      "Network, controller, system proxy, and outbound connectivity checks are not implemented in milestone 1.",
-				SuggestedFix: "Continue with Milestone 2 and Milestone 3.",
-			},
 		},
 	}
 }
