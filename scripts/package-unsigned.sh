@@ -78,7 +78,7 @@ if [[ -d "$APP_DEST" ]]; then
 fi
 cp -R "$APP_SOURCE" "$APP_DEST" 2>/dev/null || sudo cp -R "$APP_SOURCE" "$APP_DEST"
 
-xattr -dr com.apple.quarantine "$APP_DEST" 2>/dev/null || true
+xattr -cr "$APP_DEST" 2>/dev/null || true
 
 echo "安装完成，正在打开 ProxyCat..."
 open "$APP_DEST" || true
