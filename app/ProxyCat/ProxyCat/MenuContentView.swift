@@ -107,6 +107,8 @@ struct MenuContentView: View {
                     Text(isBootstrapping ? "启动中..." : "一键启动")
                     Spacer()
                 }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
             }
             .buttonStyle(PlainButtonStyle())
             .padding(.horizontal, 16)
@@ -153,13 +155,20 @@ struct MenuContentView: View {
 
             modeControls
 
+            if !viewModel.proxyGroups.isEmpty {
+                delayControls
+            }
+
             if viewModel.proxyGroups.isEmpty {
                 Text("暂无节点，请先一键启动或更新订阅")
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 16)
             } else {
-                proxyGroupControls
+                ScrollView {
+                    proxyGroupControls
+                }
+                .frame(maxHeight: 320)
             }
         }
         .padding(.bottom, 8)
@@ -182,6 +191,33 @@ struct MenuContentView: View {
             }
         }
         .padding(.horizontal, 16)
+    }
+
+    private var delayControls: some View {
+        Button(action: {
+            Task { await viewModel.testProxyDelays() }
+        }) {
+            HStack {
+                if viewModel.isTestingDelays {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .frame(width: 20)
+                } else {
+                    Image(systemName: "speedometer")
+                        .frame(width: 20)
+                }
+                Text(viewModel.isTestingDelays ? "测延迟中..." : "测延迟")
+                Spacer()
+            }
+            .font(.system(size: 12, weight: .medium))
+        }
+        .buttonStyle(PlainButtonStyle())
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(Color.secondary.opacity(0.08))
+        .cornerRadius(6)
+        .padding(.horizontal, 16)
+        .disabled(viewModel.isTestingDelays)
     }
 
     private var proxyGroupControls: some View {
@@ -207,9 +243,12 @@ struct MenuContentView: View {
                                 Image(systemName: group.now == proxy ? "checkmark.circle.fill" : "circle")
                                     .frame(width: 20)
                                     .foregroundColor(group.now == proxy ? .accentColor : .secondary)
-                                Text(proxy)
+                                Text(displayName(for: proxy))
                                     .lineLimit(1)
                                 Spacer()
+                                Text(delayLabel(for: proxy))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(delayColor(for: proxy))
                             }
                             .font(.system(size: 12))
                         }
@@ -222,6 +261,33 @@ struct MenuContentView: View {
                 .padding(.vertical, 4)
             }
         }
+    }
+
+    private func displayName(for proxy: String) -> String {
+        proxy.replacingOccurrences(of: "\u{1F1F9}\u{1F1FC}", with: "\u{1F1E8}\u{1F1F3}")
+    }
+
+    private func delayLabel(for proxy: String) -> String {
+        guard let result = viewModel.proxyDelays[proxy] else {
+            return ""
+        }
+        if result.error != nil {
+            return "超时"
+        }
+        return "\(result.delay)ms"
+    }
+
+    private func delayColor(for proxy: String) -> Color {
+        guard let result = viewModel.proxyDelays[proxy], result.error == nil else {
+            return .secondary
+        }
+        if result.delay <= 100 {
+            return .green
+        }
+        if result.delay <= 250 {
+            return .orange
+        }
+        return .red
     }
 
     private var hasFeedback: Bool {

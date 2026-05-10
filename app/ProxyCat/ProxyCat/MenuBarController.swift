@@ -1,11 +1,15 @@
 import SwiftUI
 import AppKit
 
+class KeyEventWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+}
+
 @MainActor
 class MenuBarController: NSObject, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var viewModel: StatusViewModel!
-    private var menuWindow: NSWindow?
+    private var menuWindow: KeyEventWindow?
 
     override init() {
         super.init()
@@ -42,7 +46,7 @@ class MenuBarController: NSObject, NSWindowDelegate {
                 .frame(width: windowWidth)
         )
 
-        let window = NSWindow(contentViewController: hostingController)
+        let window = KeyEventWindow(contentViewController: hostingController)
         window.styleMask = [.borderless]
         window.isOpaque = false
         window.backgroundColor = .clear
