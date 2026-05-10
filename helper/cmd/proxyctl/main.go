@@ -652,6 +652,8 @@ func runSubscriptionList(stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
+const subscriptionUserAgent = "clash-verge/v1.7.7"
+
 func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 	runtimePaths, err := paths.Default()
 	if err != nil {
@@ -672,7 +674,7 @@ func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 
 	client := &http.Client{}
 	for i, r := range records {
-		content, err := subscription.Download(client, r.URL, "ProxyCat/1.0")
+		content, err := subscription.Download(client, r.URL, subscriptionUserAgent)
 		if err != nil {
 			fmt.Fprintf(stderr, "download subscription %d: %v\n", i+1, err)
 			continue
@@ -741,7 +743,7 @@ func runConfigGenerate(stdout io.Writer, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Generating config from subscription: %s\n", redact.URL(r.URL))
 
 	client := &http.Client{}
-	content, err := subscription.Download(client, r.URL, "ProxyCat/1.0")
+	content, err := subscription.Download(client, r.URL, subscriptionUserAgent)
 	if err != nil {
 		fmt.Fprintf(stderr, "download subscription: %v\n", err)
 		return 1

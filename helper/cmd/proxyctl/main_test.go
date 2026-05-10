@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,6 +95,41 @@ func TestSubscriptionAddCommand(t *testing.T) {
 	_, err := os.Stat(filepath.Join(configDir, "subscriptions.json"))
 	if err != nil {
 		t.Fatalf("subscriptions.json not created: %v", err)
+	}
+}
+
+func TestConfigGenerateUsesClashVergeUserAgent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var userAgent string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userAgent = r.Header.Get("User-Agent")
+		_, _ = w.Write([]byte(`proxies:
+  - name: Node1
+    type: trojan
+    server: example.com
+    port: 443
+    password: secret
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - Node1
+rules:
+  - MATCH,Proxy
+`))
+	}))
+	defer server.Close()
+
+	run([]string{"subscription", "add", server.URL}, io.Discard, io.Discard)
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"config", "generate"}, stdout, stderr)
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if userAgent != subscriptionUserAgent {
+		t.Fatalf("User-Agent = %q, want %q", userAgent, subscriptionUserAgent)
 	}
 }
 

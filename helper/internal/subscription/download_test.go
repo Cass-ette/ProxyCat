@@ -19,7 +19,7 @@ func TestDownloadFetchesContent(t *testing.T) {
 	defer server.Close()
 
 	client := &http.Client{}
-	content, err := Download(client, server.URL, "ProxyCat/1.0")
+	content, err := Download(client, server.URL, "clash-verge/v1.7.7")
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
