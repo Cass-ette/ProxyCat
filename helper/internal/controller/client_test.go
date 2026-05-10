@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -215,6 +216,40 @@ func TestGetProxyGroups(t *testing.T) {
 	}
 	if len(auto.All) != 3 {
 		t.Fatalf("expected 3 proxies in group, got %d", len(auto.All))
+	}
+}
+
+func TestTestProxyDelay(t *testing.T) {
+	var capturedPath string
+	var capturedQuery url.Values
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.Query()
+		if r.Method != "GET" {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]int{"delay": 123})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	delay, err := client.TestProxyDelay("🇯🇵日本-A(通用)", "http://www.gstatic.com/generate_204", 5000)
+	if err != nil {
+		t.Fatalf("TestProxyDelay failed: %v", err)
+	}
+	if delay != 123 {
+		t.Fatalf("delay = %d, want 123", delay)
+	}
+	if capturedPath != "/proxies/🇯🇵日本-A(通用)/delay" {
+		t.Fatalf("path = %q", capturedPath)
+	}
+	if capturedQuery.Get("url") != "http://www.gstatic.com/generate_204" {
+		t.Fatalf("url query = %q", capturedQuery.Get("url"))
+	}
+	if capturedQuery.Get("timeout") != "5000" {
+		t.Fatalf("timeout query = %q", capturedQuery.Get("timeout"))
 	}
 }
 

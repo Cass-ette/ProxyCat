@@ -23,6 +23,11 @@ struct TestResult: Codable {
     let error: String?
 }
 
+struct ProxyDelayResult: Codable {
+    let delay: Int
+    let error: String?
+}
+
 struct ModeStatus: Codable {
     let mode: String
 }

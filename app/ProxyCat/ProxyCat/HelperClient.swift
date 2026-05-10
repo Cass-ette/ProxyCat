@@ -201,6 +201,18 @@ actor HelperClient {
         }
     }
 
+    func testProxyDelays() async -> Result<[String: ProxyDelayResult], HelperError> {
+        let result = await runCommand(["groups", "delay", "--json"])
+        return result.flatMap { data in
+            do {
+                let delays = try JSONDecoder().decode([String: ProxyDelayResult].self, from: data)
+                return .success(delays)
+            } catch {
+                return .failure(.decodingFailed(error))
+            }
+        }
+    }
+
     func selectProxy(group: String, proxy: String) async -> Result<Void, HelperError> {
         let result = await runCommand(["groups", "select", group, proxy])
         return result.map { _ in () }

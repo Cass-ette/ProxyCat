@@ -15,6 +15,8 @@ class StatusViewModel: ObservableObject {
     @Published var isRefreshing = false
     @Published var testResult: TestResult?
     @Published var diagnoseReport: DiagnoseReport?
+    @Published var proxyDelays: [String: ProxyDelayResult] = [:]
+    @Published var isTestingDelays = false
     @Published var bootstrapStatus: String = ""
 
     private let helper = HelperClient.shared
@@ -144,6 +146,20 @@ class StatusViewModel: ObservableObject {
         case .failure(let error):
             lastError = "Test failed: \(error.localizedDescription)"
             testResult = nil
+        }
+    }
+
+    func testProxyDelays() async {
+        isTestingDelays = true
+        defer { isTestingDelays = false }
+
+        let result = await helper.testProxyDelays()
+        switch result {
+        case .success(let delays):
+            proxyDelays = delays
+            lastError = nil
+        case .failure(let error):
+            lastError = "Delay test failed: \(error.localizedDescription)"
         }
     }
 

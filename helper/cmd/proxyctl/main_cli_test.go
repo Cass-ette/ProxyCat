@@ -287,6 +287,18 @@ func TestGroupsSelectCommand(t *testing.T) {
 	_ = exitCode
 }
 
+func TestGroupsDelayCommandRecognized(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	exitCode := run([]string{"groups", "delay", "--json"}, stdout, stderr)
+
+	if strings.Contains(stderr.String(), "unknown groups subcommand") {
+		t.Fatalf("groups delay should be recognized: %s", stderr.String())
+	}
+	_ = exitCode
+}
+
 func TestGroupsUnknownSubcommand(t *testing.T) {
 	stdout := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)

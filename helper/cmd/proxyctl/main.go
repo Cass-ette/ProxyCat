@@ -150,6 +150,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		switch args[1] {
 		case "list":
 			return runGroupsJSON(stdout, stderr, jsonOutput)
+		case "delay":
+			return runGroupsDelay(stdout, stderr, jsonOutput)
 		case "select":
 			if len(args) < 4 {
 				fmt.Fprintf(stderr, "groups select requires <group> <proxy>\n")
@@ -279,6 +281,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl system-proxy {on|off|status}")
 	fmt.Fprintln(w, "  proxyctl mode {status|set <rule|global|direct>}")
 	fmt.Fprintln(w, "  proxyctl groups [list]")
+	fmt.Fprintln(w, "  proxyctl groups delay [--json]")
 	fmt.Fprintln(w, "  proxyctl groups select <group> <proxy>")
 	fmt.Fprintln(w, "  proxyctl test")
 	fmt.Fprintln(w, "  proxyctl select <group> <proxy>")
@@ -505,6 +508,74 @@ func runGroupsJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 		}
 	}
 	return 0
+}
+
+type proxyDelayResult struct {
+	Delay int    `json:"delay"`
+	Error string `json:"error,omitempty"`
+}
+
+func runGroupsDelay(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
+	client := controller.NewClient("")
+	groups, err := client.GetProxyGroups()
+	if err != nil {
+		fmt.Fprintf(stderr, "get proxy groups: %v\n", err)
+		return 1
+	}
+
+	groupNames := make(map[string]bool, len(groups))
+	for name := range groups {
+		groupNames[name] = true
+	}
+
+	results := make(map[string]proxyDelayResult)
+	const testURL = "http://www.gstatic.com/generate_204"
+	const timeoutMS = 5000
+	for _, group := range groups {
+		for _, proxy := range group.All {
+			if isDelaySkippedProxy(proxy, groupNames) {
+				continue
+			}
+			if _, exists := results[proxy]; exists {
+				continue
+			}
+			delay, err := client.TestProxyDelay(proxy, testURL, timeoutMS)
+			if err != nil {
+				results[proxy] = proxyDelayResult{Error: err.Error()}
+				continue
+			}
+			results[proxy] = proxyDelayResult{Delay: delay}
+		}
+	}
+
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(results); err != nil {
+			fmt.Fprintf(stderr, "encode proxy delays: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	if len(results) == 0 {
+		fmt.Fprintln(stdout, "No proxies to test")
+		return 0
+	}
+	for name, result := range results {
+		if result.Error != "" {
+			fmt.Fprintf(stdout, "%s: timeout\n", name)
+			continue
+		}
+		fmt.Fprintf(stdout, "%s: %dms\n", name, result.Delay)
+	}
+	return 0
+}
+
+func isDelaySkippedProxy(name string, groupNames map[string]bool) bool {
+	switch name {
+	case "DIRECT", "REJECT", "":
+		return true
+	}
+	return groupNames[name]
 }
 
 func runGroupsSelect(group string, proxy string, stdout io.Writer, stderr io.Writer) int {

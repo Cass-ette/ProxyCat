@@ -69,6 +69,10 @@ type configPatchRequest struct {
 	Mode string `json:"mode"`
 }
 
+type delayResponse struct {
+	Delay int `json:"delay"`
+}
+
 // NewClient creates a new controller client with the given base URL.
 // The base URL should include the protocol and host (e.g., "http://127.0.0.1:9090").
 // If baseURL is empty, it defaults to http://127.0.0.1:9090.
@@ -219,6 +223,43 @@ func (c *Client) GetProxyGroups() (map[string]Proxy, error) {
 	}
 
 	return groups, nil
+}
+
+func (c *Client) TestProxyDelay(proxyName string, testURL string, timeoutMS int) (int, error) {
+	base, err := url.Parse(c.baseURL)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse base URL: %w", err)
+	}
+	base.Path = "/proxies/" + proxyName + "/delay"
+	base.RawPath = "/proxies/" + url.PathEscape(proxyName) + "/delay"
+	query := base.Query()
+	query.Set("url", testURL)
+	query.Set("timeout", fmt.Sprint(timeoutMS))
+	base.RawQuery = query.Encode()
+
+	req, err := http.NewRequest("GET", base.String(), nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	if c.secret != "" {
+		req.Header.Set("Authorization", "Bearer "+c.secret)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var result delayResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("failed to decode response: %w", err)
+	}
+	return result.Delay, nil
 }
 
 // SelectProxy selects a proxy for a given proxy group.
