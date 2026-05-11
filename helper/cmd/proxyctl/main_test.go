@@ -103,11 +103,13 @@ func TestSubscriptionAddCommand(t *testing.T) {
 	}
 }
 
-func TestConfigGenerateUsesClashVergeUserAgent(t *testing.T) {
+func TestConfigGenerateUsesProbeSelection(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	var userAgent string
+	var firstUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userAgent = r.Header.Get("User-Agent")
+		if firstUserAgent == "" {
+			firstUserAgent = r.Header.Get("User-Agent")
+		}
 		_, _ = w.Write([]byte(`proxies:
   - name: Node1
     type: trojan
@@ -133,8 +135,113 @@ rules:
 	if exitCode != 0 {
 		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
 	}
-	if userAgent != subscriptionUserAgent {
-		t.Fatalf("User-Agent = %q, want %q", userAgent, subscriptionUserAgent)
+	if firstUserAgent != "clash-verge/v1.7.7" {
+		t.Fatalf("first User-Agent = %q, want clash-verge/v1.7.7", firstUserAgent)
+	}
+	if !strings.Contains(stdout.String(), "Selected subscription format: clash-yaml via clash-verge/v1.7.7") {
+		t.Fatalf("config generate output missing probe selection: %s", stdout.String())
+	}
+}
+
+func TestSubscriptionProbeJSONCommand(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`proxies:
+  - name: Node1
+    type: trojan
+    server: example.com
+    port: 443
+    password: secret
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - Node1
+rules:
+  - MATCH,Proxy
+`))
+	}))
+	defer server.Close()
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"subscription", "probe", server.URL + "?token=secret", "--json"}, stdout, stderr)
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "secret") {
+		t.Fatalf("probe output leaked token: %s", stdout.String())
+	}
+	var decoded struct {
+		Selected *struct {
+			Format string `json:"format"`
+		} `json:"selected"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if decoded.Selected == nil || decoded.Selected.Format != "clash-yaml" {
+		t.Fatalf("unexpected probe output: %s", stdout.String())
+	}
+}
+
+func TestSubscriptionUpdateShowsSuggestedFixForInvalidProbe(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<!doctype html><html><body>login</body></html>"))
+	}))
+	defer server.Close()
+
+	run([]string{"subscription", "add", server.URL}, io.Discard, io.Discard)
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"subscription", "update"}, stdout, stderr)
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "建议：") {
+		t.Fatalf("update output missing suggested fix: %s", stdout.String())
+	}
+}
+
+func TestSubscriptionUpdateUsesProbe(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`proxies:
+  - name: Node1
+    type: trojan
+    server: example.com
+    port: 443
+    password: secret
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - Node1
+rules:
+  - MATCH,Proxy
+`))
+	}))
+	defer server.Close()
+
+	// Add subscription pointing to test server
+	run([]string{"subscription", "add", server.URL}, io.Discard, io.Discard)
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"subscription", "update"}, stdout, stderr)
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "selected clash-yaml") {
+		t.Fatalf("update output missing probe selection: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Valid: 1 proxies") {
+		t.Fatalf("update output missing proxy count: %s", stdout.String())
 	}
 }
 
