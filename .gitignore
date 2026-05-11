@@ -1,3 +1,7 @@
+.DS_Store
+findings.md
+progress.md
+task_plan.md
 .worktrees/
 app/ProxyCat/build/
 DerivedData/
