@@ -37,15 +37,22 @@ func downloadWithClient(client HTTPClient, url string, userAgent string) ([]byte
 		return nil, fmt.Errorf("download: status %d", resp.StatusCode)
 	}
 
-	limited := io.LimitReader(resp.Body, maxDownloadSize+1)
+	content, err := readAllLimited(resp.Body, maxDownloadSize)
+	if err != nil {
+		return nil, err
+	}
+
+	return content, nil
+}
+
+func readAllLimited(reader io.Reader, maxSize int64) ([]byte, error) {
+	limited := io.LimitReader(reader, maxSize+1)
 	content, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
-
-	if len(content) > maxDownloadSize {
+	if int64(len(content)) > maxSize {
 		return nil, fmt.Errorf("download: response exceeds size limit")
 	}
-
 	return content, nil
 }

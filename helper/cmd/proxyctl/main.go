@@ -55,7 +55,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runBootstrap(args[1], stdout, stderr)
 	case "subscription":
 		if len(args) < 2 {
-			fmt.Fprintf(stderr, "subscription subcommand required: add, list, update\n")
+			fmt.Fprintf(stderr, "subscription subcommand required: add, list, update, probe\n")
 			printHelp(stderr)
 			return 2
 		}
@@ -70,6 +70,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return runSubscriptionList(stdout, stderr)
 		case "update":
 			return runSubscriptionUpdate(stdout, stderr)
+		case "probe":
+			if len(args) < 3 {
+				fmt.Fprintf(stderr, "subscription probe requires URL\n")
+				return 2
+			}
+			return runSubscriptionProbe(args[2], stdout, stderr, jsonOutput)
 		default:
 			fmt.Fprintf(stderr, "unknown subscription subcommand: %s\n", redact.String(args[1]))
 			return 2
@@ -276,6 +282,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl subscription add <url>")
 	fmt.Fprintln(w, "  proxyctl subscription list")
 	fmt.Fprintln(w, "  proxyctl subscription update")
+	fmt.Fprintln(w, "  proxyctl subscription probe <url> [--json]")
 	fmt.Fprintln(w, "  proxyctl config generate")
 	fmt.Fprintln(w, "  proxyctl core {install|start|stop|restart|status}")
 	fmt.Fprintln(w, "  proxyctl system-proxy {on|off|status}")
@@ -699,6 +706,36 @@ func runSubscriptionAdd(url string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
+func runSubscriptionProbe(rawURL string, stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
+	result := subscription.Probe(&http.Client{}, rawURL)
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			fmt.Fprintf(stderr, "encode subscription probe: %v\n", err)
+			return 1
+		}
+		if result.Selected == nil {
+			return 1
+		}
+		return 0
+	}
+
+	if result.Selected != nil {
+		fmt.Fprintf(stdout, "订阅可用：%s via %s\n", result.Selected.Format, result.Selected.UserAgent)
+		if result.Selected.ProxyCount > 0 {
+			fmt.Fprintf(stdout, "节点：%d，策略组：%d，规则：%d\n", result.Selected.ProxyCount, result.Selected.GroupCount, result.Selected.RuleCount)
+		} else if result.Selected.NodeCount > 0 {
+			fmt.Fprintf(stdout, "节点：%d\n", result.Selected.NodeCount)
+		}
+		return 0
+	}
+
+	fmt.Fprintln(stderr, result.Message)
+	if result.SuggestedFix != "" {
+		fmt.Fprintf(stderr, "建议：%s\n", result.SuggestedFix)
+	}
+	return 1
+}
+
 func runSubscriptionList(stdout io.Writer, stderr io.Writer) int {
 	runtimePaths, err := paths.Default()
 	if err != nil {
@@ -723,8 +760,6 @@ func runSubscriptionList(stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
-const subscriptionUserAgent = "clash-verge/v1.7.7"
-
 func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 	runtimePaths, err := paths.Default()
 	if err != nil {
@@ -745,42 +780,22 @@ func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 
 	client := &http.Client{}
 	for i, r := range records {
-		content, err := subscription.Download(client, r.URL, subscriptionUserAgent)
-		if err != nil {
-			fmt.Fprintf(stderr, "download subscription %d: %v\n", i+1, err)
+		probe := subscription.Probe(client, r.URL)
+		if probe.Selected == nil {
+			fmt.Fprintf(stdout, "Subscription %d: invalid - %s\n", i+1, probe.Message)
+			if probe.SuggestedFix != "" {
+				fmt.Fprintf(stdout, "  建议：%s\n", probe.SuggestedFix)
+			}
 			continue
 		}
 
-		// Detect format
-		format, confidence := config.DetectFormat(content)
-		fmt.Fprintf(stdout, "Subscription %d: detected %s (confidence: %s)\n", i+1, format, confidence)
-
-		// Validate based on format
-		switch format {
-		case config.FormatClashYAML:
-			result := config.Validate(content)
-			if result.Valid {
-				fmt.Fprintf(stdout, "  Valid: %d proxies, %d groups, %d rules\n", result.ProxyCount, result.GroupCount, result.RuleCount)
-				records[i].LastUpdate = time.Now()
-			} else {
-				fmt.Fprintf(stdout, "  Invalid: %s\n", result.Message)
-				continue
-			}
-		case config.FormatBase64List, config.FormatPlainList:
-			// For URI list formats, count nodes instead of validating YAML structure
-			// These formats need to be converted to YAML config separately
-			nodeCount := config.CountNodes(content, format)
-			if nodeCount > 0 {
-				fmt.Fprintf(stdout, "  Valid: %d nodes (requires config generation)\n", nodeCount)
-				records[i].LastUpdate = time.Now()
-			} else {
-				fmt.Fprintf(stdout, "  Invalid: no valid nodes found\n")
-				continue
-			}
-		default:
-			fmt.Fprintf(stdout, "  Unknown format, skipping validation\n")
-			continue
+		fmt.Fprintf(stdout, "Subscription %d: selected %s via %s\n", i+1, probe.Selected.Format, probe.Selected.UserAgent)
+		if probe.Selected.ProxyCount > 0 {
+			fmt.Fprintf(stdout, "  Valid: %d proxies, %d groups, %d rules\n", probe.Selected.ProxyCount, probe.Selected.GroupCount, probe.Selected.RuleCount)
+		} else {
+			fmt.Fprintf(stdout, "  Valid: %d nodes (requires config generation)\n", probe.Selected.NodeCount)
 		}
+		records[i].LastUpdate = time.Now()
 	}
 
 	if err := subscription.Save(runtimePaths.SubscriptionsJSON, records); err != nil {
@@ -814,13 +829,18 @@ func runConfigGenerate(stdout io.Writer, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Generating config from subscription: %s\n", redact.URL(r.URL))
 
 	client := &http.Client{}
-	content, err := subscription.Download(client, r.URL, subscriptionUserAgent)
-	if err != nil {
-		fmt.Fprintf(stderr, "download subscription: %v\n", err)
+	probe := subscription.Probe(client, r.URL)
+	if probe.Selected == nil {
+		fmt.Fprintf(stderr, "%s\n", probe.Message)
+		if probe.SuggestedFix != "" {
+			fmt.Fprintf(stderr, "建议：%s\n", probe.SuggestedFix)
+		}
 		return 1
 	}
+	content := probe.SelectedContent
+	fmt.Fprintf(stdout, "Selected subscription format: %s via %s\n", probe.Selected.Format, probe.Selected.UserAgent)
 
-	format, _ := config.DetectFormat(content)
+	format := config.Format(probe.Selected.Format)
 
 	var configYAML string
 	switch format {
