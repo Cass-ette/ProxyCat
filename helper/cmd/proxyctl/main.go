@@ -15,6 +15,7 @@ import (
 	"github.com/Cass-ette/ProxyCat/helper/internal/diagnose"
 	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
 	"github.com/Cass-ette/ProxyCat/helper/internal/redact"
+	"github.com/Cass-ette/ProxyCat/helper/internal/selfupdate"
 	"github.com/Cass-ette/ProxyCat/helper/internal/subscription"
 	"github.com/Cass-ette/ProxyCat/helper/internal/sysproxy"
 )
@@ -172,6 +173,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	case "test":
 		return runTestJSON(stdout, stderr, jsonOutput)
 
+	case "self-update":
+		return runSelfUpdate(stdout, stderr, jsonOutput, containsArg(args[1:], "--check-only"))
+
+	case "update":
+		return runSelfUpdate(stdout, stderr, jsonOutput, containsArg(args[1:], "--check-only"))
+
 	case "select":
 		if len(args) < 3 {
 			fmt.Fprintf(stderr, "select requires group and proxy arguments\n")
@@ -184,6 +191,28 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		printHelp(stderr)
 		return 2
 	}
+}
+
+func containsArg(args []string, target string) bool {
+	for _, arg := range args {
+		if arg == target {
+			return true
+		}
+	}
+	return false
+}
+
+func runSelfUpdate(stdout io.Writer, stderr io.Writer, jsonOutput bool, checkOnly bool) int {
+	if !checkOnly {
+		fmt.Fprintln(stderr, "self-update install is not available until a GitHub Release asset exists")
+		return 1
+	}
+	runner := selfupdate.Runner{
+		CurrentVersion: "0.1.0",
+		Latest:         selfupdate.Release{Version: "0.1.0"},
+		CheckOnly:      true,
+	}
+	return runner.Run(stdout, jsonOutput)
 }
 
 func runBootstrap(url string, stdout io.Writer, stderr io.Writer) int {
@@ -291,6 +320,8 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl groups delay [--json]")
 	fmt.Fprintln(w, "  proxyctl groups select <group> <proxy>")
 	fmt.Fprintln(w, "  proxyctl test")
+	fmt.Fprintln(w, "  proxyctl self-update [--json] [--check-only]")
+	fmt.Fprintln(w, "  proxyctl update [--json] [--check-only]")
 	fmt.Fprintln(w, "  proxyctl select <group> <proxy>")
 }
 

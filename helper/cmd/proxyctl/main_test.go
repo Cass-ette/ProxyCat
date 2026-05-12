@@ -245,6 +245,18 @@ rules:
 	}
 }
 
+func TestSelfUpdateCommandIsRecognized(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"self-update", "--check-only"}, stdout, stderr)
+	if strings.Contains(stderr.String(), "unknown command") {
+		t.Fatalf("self-update command should be recognized: %s", stderr.String())
+	}
+	if exitCode != 0 && exitCode != 1 {
+		t.Fatalf("unexpected exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+}
+
 func TestSubscriptionListCommand(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
