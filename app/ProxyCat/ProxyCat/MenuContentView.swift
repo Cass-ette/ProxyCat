@@ -495,16 +495,26 @@ struct MenuContentView: View {
             }
             .disabled(viewModel.isCheckingForUpdate || viewModel.isInstallingUpdate)
 
-            MenuButton(viewModel.isInstallingUpdate ? "更新中..." : "安装更新", icon: "square.and.arrow.down") {
-                Task { await viewModel.installUpdate() }
+            if viewModel.isInstallingUpdate {
+                MenuButton("取消更新", icon: "xmark.circle") {
+                    Task { await viewModel.cancelUpdate() }
+                }
+            } else if viewModel.updateFailed {
+                MenuButton("重试更新", icon: "arrow.clockwise") {
+                    Task { await viewModel.installUpdate() }
+                }
+            } else {
+                MenuButton(viewModel.isInstallingUpdate ? "更新中..." : "安装更新", icon: "square.and.arrow.down") {
+                    Task { await viewModel.installUpdate() }
+                }
+                .disabled(viewModel.availableUpdateVersion == nil)
             }
-            .disabled(viewModel.isCheckingForUpdate || viewModel.isInstallingUpdate || viewModel.availableUpdateVersion == nil)
 
             if !viewModel.updateStatus.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(viewModel.updateStatus)
                         .font(.system(size: 12))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(viewModel.updateFailed ? .red : .secondary)
                     if let progress = viewModel.updateProgress {
                         ProgressView(value: Double(progress), total: 100)
                     }

@@ -25,6 +25,7 @@ actor HelperClient {
     static let shared = HelperClient()
 
     private var proxyctlPath: String?
+    private var updateProcess: Process?
 
     private func getProxyctlPath() -> String? {
         if let path = proxyctlPath { return path }
@@ -192,14 +193,15 @@ actor HelperClient {
                     return
                 }
 
-                let task = Process()
-                task.executableURL = URL(fileURLWithPath: executable)
-                task.arguments = ["self-update", "--json"]
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: executable)
+                process.arguments = ["self-update", "--json"]
+                self.updateProcess = process
 
                 let outputPipe = Pipe()
                 let errorPipe = Pipe()
-                task.standardOutput = outputPipe
-                task.standardError = errorPipe
+                process.standardOutput = outputPipe
+                process.standardError = errorPipe
 
                 let decoder = JSONDecoder()
                 var buffer = Data()
@@ -226,7 +228,7 @@ actor HelperClient {
                     }
                 }
 
-                task.terminationHandler = { _ in
+                process.terminationHandler = { _ in
                     outputPipe.fileHandleForReading.readabilityHandler = nil
                     errorPipe.fileHandleForReading.readabilityHandler = nil
                     let remaining = outputPipe.fileHandleForReading.readDataToEndOfFile()
@@ -248,13 +250,18 @@ actor HelperClient {
                 }
 
                 do {
-                    try task.run()
+                    try process.run()
                 } catch {
                     continuation.yield(UpdateEvent(stage: "error", message: error.localizedDescription, progress: nil, newVersion: nil))
                     continuation.finish()
                 }
             }
         }
+    }
+
+    func cancelUpdate() {
+        updateProcess?.terminate()
+        updateProcess = nil
     }
 
     func runDiagnose() async -> Result<DiagnoseReport, HelperError> {

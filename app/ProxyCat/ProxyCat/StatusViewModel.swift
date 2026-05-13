@@ -24,6 +24,7 @@ class StatusViewModel: ObservableObject {
     @Published var isCheckingForUpdate = false
     @Published var isInstallingUpdate = false
     @Published var showRestartAlert = false
+    @Published var updateFailed = false
 
     private let helper = HelperClient.shared
     private var refreshTimer: Timer?
@@ -198,6 +199,7 @@ class StatusViewModel: ObservableObject {
 
     func installUpdate() async {
         isInstallingUpdate = true
+        updateFailed = false
         updateStatus = "正在准备更新..."
         updateProgress = nil
         lastError = nil
@@ -213,8 +215,13 @@ class StatusViewModel: ObservableObject {
             }
             if event.stage == "error" {
                 lastError = event.message
+                updateFailed = true
             }
         }
+    }
+
+    func cancelUpdate() async {
+        await helper.cancelUpdate()
     }
 
     func runDiagnose() async {
