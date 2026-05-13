@@ -50,6 +50,7 @@ class MenuBarController: NSObject, NSWindowDelegate {
         window.styleMask = [.borderless]
         window.isOpaque = false
         window.backgroundColor = .clear
+        window.hasShadow = false
         window.level = .statusBar
         window.delegate = self
 
