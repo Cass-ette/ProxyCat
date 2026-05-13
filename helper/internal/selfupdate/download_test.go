@@ -1,10 +1,12 @@
 package selfupdate
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -41,4 +43,39 @@ func TestDownloadFileWritesContent(t *testing.T) {
 	if string(got) != "hello" {
 		t.Fatalf("content = %q", got)
 	}
+}
+
+func TestDownloadFileReportsHTTPStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "rate limited", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	err := downloadFile(server.Client(), server.URL, filepath.Join(t.TempDir(), "file.zip"), nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("error = %q, want HTTP status", err.Error())
+	}
+}
+
+func TestDownloadFileReportsNetworkError(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("lookup github.com: no such host")
+	})}
+
+	err := downloadFile(client, "https://github.com/Cass-ette/ProxyCat/releases/download/v0.6.0/ProxyCat.zip", filepath.Join(t.TempDir(), "file.zip"), nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "lookup github.com") {
+		t.Fatalf("error = %q, want network detail", err.Error())
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

@@ -51,11 +51,11 @@ func verifyFileSHA256(path string, expected string) error {
 func downloadFile(client *http.Client, url string, dest string, progress progressFunc) error {
 	resp, err := client.Get(url)
 	if err != nil {
-		return fmt.Errorf("下载失败，请检查网络后重试")
+		return fmt.Errorf("网络连接失败：%v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下载失败，请检查网络后重试")
+		return fmt.Errorf("服务器返回 HTTP %d", resp.StatusCode)
 	}
 
 	out, err := os.Create(dest)
@@ -65,7 +65,7 @@ func downloadFile(client *http.Client, url string, dest string, progress progres
 	defer out.Close()
 
 	if _, err := io.Copy(out, resp.Body); err != nil {
-		return err
+		return fmt.Errorf("下载中断：%v", err)
 	}
 	if progress != nil {
 		progress(100)

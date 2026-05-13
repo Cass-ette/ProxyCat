@@ -79,7 +79,7 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 	emit(stdout, jsonOutput, Event{Stage: "downloading", Message: "正在下载更新...", Progress: 20})
 	zipPath := filepath.Join(tmpDir, "update.zip")
 	if err := downloadFile(r.Client, latest.InstallerURL, zipPath, nil); err != nil {
-		emit(stdout, jsonOutput, Event{Stage: "error", Message: err.Error()})
+		emit(stdout, jsonOutput, Event{Stage: "error", Message: "安装包下载失败：" + err.Error()})
 		return 1
 	}
 
@@ -87,7 +87,7 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 	emit(stdout, jsonOutput, Event{Stage: "verifying", Message: "正在验证更新包...", Progress: 50})
 	sha256Path := filepath.Join(tmpDir, "update.zip.sha256")
 	if err := downloadFile(r.Client, latest.SHA256URL, sha256Path, nil); err != nil {
-		emit(stdout, jsonOutput, Event{Stage: "error", Message: err.Error()})
+		emit(stdout, jsonOutput, Event{Stage: "error", Message: "校验文件下载失败：" + err.Error()})
 		return 1
 	}
 	sha256Content, err := os.ReadFile(sha256Path)

@@ -146,6 +146,63 @@ func TestRunnerInstallOrchestration(t *testing.T) {
 	}
 }
 
+func TestRunnerReportsInstallerDownloadFailureContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/release" {
+			w.Write([]byte(fmt.Sprintf(`{"tag_name":"v0.3.0","assets":[{"name":"ProxyCat-0.3.0-installer.zip","browser_download_url":"http://%s/app.zip","size":10},{"name":"ProxyCat-0.3.0-installer.zip.sha256","browser_download_url":"http://%s/app.zip.sha256","size":64}]}`, r.Host, r.Host)))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	runner := Runner{
+		CurrentVersion: "0.2.0",
+		Client:         server.Client(),
+		Endpoint:       server.URL + "/api/release",
+		AppPath:        filepath.Join(t.TempDir(), "ProxyCat.app"),
+		BackupDir:      filepath.Join(t.TempDir(), "backups"),
+	}
+	code := runner.Run(&out, true)
+	if code == 0 {
+		t.Fatal("expected non-zero exit code")
+	}
+	if !strings.Contains(out.String(), "安装包下载失败") || !strings.Contains(out.String(), "HTTP 404") {
+		t.Fatalf("output = %q, want installer download context and HTTP status", out.String())
+	}
+}
+
+func TestRunnerReportsChecksumDownloadFailureContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/release":
+			w.Write([]byte(fmt.Sprintf(`{"tag_name":"v0.3.0","assets":[{"name":"ProxyCat-0.3.0-installer.zip","browser_download_url":"http://%s/app.zip","size":10},{"name":"ProxyCat-0.3.0-installer.zip.sha256","browser_download_url":"http://%s/app.zip.sha256","size":64}]}`, r.Host, r.Host)))
+		case "/app.zip":
+			w.Write([]byte("zip bytes"))
+		default:
+			http.Error(w, "rate limited", http.StatusForbidden)
+		}
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	runner := Runner{
+		CurrentVersion: "0.2.0",
+		Client:         server.Client(),
+		Endpoint:       server.URL + "/api/release",
+		AppPath:        filepath.Join(t.TempDir(), "ProxyCat.app"),
+		BackupDir:      filepath.Join(t.TempDir(), "backups"),
+	}
+	code := runner.Run(&out, true)
+	if code == 0 {
+		t.Fatal("expected non-zero exit code")
+	}
+	if !strings.Contains(out.String(), "校验文件下载失败") || !strings.Contains(out.String(), "HTTP 403") {
+		t.Fatalf("output = %q, want checksum download context and HTTP status", out.String())
+	}
+}
+
 func TestRunnerInstallEmitsProgressStages(t *testing.T) {
 	zipDir := t.TempDir()
 	appDir := filepath.Join(zipDir, "ProxyCat.app", "Contents", "Resources")

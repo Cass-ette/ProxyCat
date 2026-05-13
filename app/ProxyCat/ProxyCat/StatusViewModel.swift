@@ -214,7 +214,6 @@ class StatusViewModel: ObservableObject {
                 showRestartAlert = true
             }
             if event.stage == "error" {
-                lastError = event.message
                 updateFailed = true
             }
         }
