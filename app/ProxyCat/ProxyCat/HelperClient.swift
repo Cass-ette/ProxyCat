@@ -229,6 +229,17 @@ actor HelperClient {
                 task.terminationHandler = { _ in
                     outputPipe.fileHandleForReading.readabilityHandler = nil
                     errorPipe.fileHandleForReading.readabilityHandler = nil
+                    let remaining = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                    if !remaining.isEmpty {
+                        buffer.append(remaining)
+                    }
+                    while let newline = buffer.firstIndex(of: 10) {
+                        let line = buffer[..<newline]
+                        buffer.removeSubrange(...newline)
+                        if let event = try? decoder.decode(UpdateEvent.self, from: Data(line)) {
+                            continuation.yield(event)
+                        }
+                    }
                     if !buffer.isEmpty,
                        let event = try? decoder.decode(UpdateEvent.self, from: buffer) {
                         continuation.yield(event)

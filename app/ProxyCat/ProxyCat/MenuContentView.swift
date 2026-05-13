@@ -63,6 +63,19 @@ struct MenuContentView: View {
         .shadow(radius: 4)
         .frame(width: 320)
         .frame(maxHeight: 640)
+        .onChange(of: viewModel.showRestartAlert) { show in
+            if show {
+                viewModel.showRestartAlert = false
+                let alert = NSAlert()
+                alert.messageText = "更新完成"
+                alert.informativeText = "需要重启 ProxyCat 才能使用新版本。"
+                alert.addButton(withTitle: "重启")
+                alert.addButton(withTitle: "稍后")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    viewModel.restartApp()
+                }
+            }
+        }
     }
 
     private var headerSection: some View {

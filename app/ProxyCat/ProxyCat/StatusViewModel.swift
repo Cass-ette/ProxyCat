@@ -23,6 +23,7 @@ class StatusViewModel: ObservableObject {
     @Published var availableUpdateVersion: String?
     @Published var isCheckingForUpdate = false
     @Published var isInstallingUpdate = false
+    @Published var showRestartAlert = false
 
     private let helper = HelperClient.shared
     private var refreshTimer: Timer?
@@ -207,6 +208,9 @@ class StatusViewModel: ObservableObject {
             updateStatus = event.message
             updateProgress = event.progress
             availableUpdateVersion = event.stage == "done" ? nil : (event.newVersion ?? availableUpdateVersion)
+            if event.stage == "done" {
+                showRestartAlert = true
+            }
             if event.stage == "error" {
                 lastError = event.message
             }
@@ -245,6 +249,14 @@ class StatusViewModel: ObservableObject {
 
     func openLogs() {
         openDirectory(applicationSupportDirectory.appendingPathComponent("logs", isDirectory: true), label: "logs folder")
+    }
+
+    func restartApp() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/bash")
+        task.arguments = ["-c", "sleep 0.5; open \"\(Bundle.main.bundlePath)\""]
+        try? task.run()
+        NSApplication.shared.terminate(nil)
     }
 
     private var applicationSupportDirectory: URL {
