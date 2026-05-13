@@ -4,7 +4,7 @@ struct MenuContentView: View {
     @ObservedObject var viewModel: StatusViewModel
     @State private var subscriptionURL: String = ""
     @State private var isBootstrapping: Bool = false
-    @State private var nodesExpanded: Bool = true
+    @AppStorage("nodesExpanded") private var nodesExpanded: Bool = true
 
     var body: some View {
         ScrollView {
