@@ -38,6 +38,11 @@ struct MenuContentView: View {
 
                 Divider()
 
+                // Updates
+                updateSection
+
+                Divider()
+
                 // Diagnostics
                 diagnosticsSection
 
@@ -435,6 +440,40 @@ struct MenuContentView: View {
 
             MenuButton("重启代理引擎", icon: "arrow.counterclockwise") {
                 Task { await viewModel.restartCore() }
+            }
+        }
+        .padding(.bottom, 8)
+    }
+
+    private var updateSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("更新")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+            MenuButton(viewModel.isCheckingForUpdate ? "检查中..." : "检查更新", icon: "arrow.down.circle") {
+                Task { await viewModel.checkForUpdate() }
+            }
+            .disabled(viewModel.isCheckingForUpdate || viewModel.isInstallingUpdate)
+
+            MenuButton(viewModel.isInstallingUpdate ? "更新中..." : "安装更新", icon: "square.and.arrow.down") {
+                Task { await viewModel.installUpdate() }
+            }
+            .disabled(viewModel.isCheckingForUpdate || viewModel.isInstallingUpdate || viewModel.availableUpdateVersion == nil)
+
+            if !viewModel.updateStatus.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(viewModel.updateStatus)
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                    if let progress = viewModel.updateProgress {
+                        ProgressView(value: Double(progress), total: 100)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 6)
             }
         }
         .padding(.bottom, 8)

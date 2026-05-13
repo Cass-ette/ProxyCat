@@ -46,6 +46,87 @@ func TestReplaceAppBacksUpOldApp(t *testing.T) {
 	}
 }
 
+func TestReplaceAppClearsQuarantine(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, "Applications", "ProxyCat.app")
+	backupDir := filepath.Join(root, "backups")
+	newApp := fakeAppBundle(t, "com.cassette.proxycat")
+	if err := os.MkdirAll(filepath.Dir(current), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotName string
+	var gotArgs []string
+	oldCommandOutput := commandOutputFunc
+	commandOutputFunc = func(name string, args ...string) ([]byte, error) {
+		gotName = name
+		gotArgs = args
+		return []byte{}, nil
+	}
+	defer func() { commandOutputFunc = oldCommandOutput }()
+
+	if err := replaceApp(current, newApp, backupDir, "0.1.0"); err != nil {
+		t.Fatalf("replaceApp returned error: %v", err)
+	}
+	if gotName != "xattr" || len(gotArgs) != 2 || gotArgs[0] != "-cr" || gotArgs[1] != current {
+		t.Fatalf("clear quarantine command = %s %v", gotName, gotArgs)
+	}
+}
+
+func TestReplaceAppKeepsOnlyLatestBackup(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, "Applications", "ProxyCat.app")
+	backupDir := filepath.Join(root, "backups")
+	oldBackup := filepath.Join(backupDir, "ProxyCat-0.0.9.app")
+	newApp := fakeAppBundle(t, "com.cassette.proxycat")
+	if err := os.MkdirAll(filepath.Dir(current), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(oldBackup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replaceApp(current, newApp, backupDir, "0.1.0"); err != nil {
+		t.Fatalf("replaceApp returned error: %v", err)
+	}
+	if _, err := os.Stat(oldBackup); !os.IsNotExist(err) {
+		t.Fatalf("old backup still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(backupDir, "ProxyCat-0.1.0.app")); err != nil {
+		t.Fatalf("latest backup missing: %v", err)
+	}
+}
+
+func TestReplaceAppRollsBackWhenNewAppMoveFails(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, "Applications", "ProxyCat.app")
+	backupDir := filepath.Join(root, "backups")
+	missingNewApp := filepath.Join(root, "missing", "ProxyCat.app")
+	if err := os.MkdirAll(filepath.Dir(current), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(current, "old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := replaceApp(current, missingNewApp, backupDir, "0.1.0")
+	if err == nil {
+		t.Fatal("expected replaceApp error")
+	}
+	if _, statErr := os.Stat(filepath.Join(current, "old.txt")); statErr != nil {
+		t.Fatalf("old app was not restored: %v", statErr)
+	}
+}
+
 func fakeAppBundle(t *testing.T, bundleID string) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "ProxyCat.app")

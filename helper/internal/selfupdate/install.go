@@ -11,9 +11,11 @@ import (
 
 const proxyCatBundleID = "com.cassette.proxycat"
 
+var commandOutputFunc = commandOutput
+
 func validateBundle(appPath string) error {
 	infoPlist := filepath.Join(appPath, "Contents", "Info.plist")
-	out, err := commandOutput("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", infoPlist)
+	out, err := commandOutputFunc("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", infoPlist)
 	if err != nil {
 		return fmt.Errorf("更新失败：安装包格式不正确")
 	}
@@ -39,8 +41,29 @@ func replaceApp(currentApp string, newApp string, backupDir string, oldVersion s
 	}
 	if err := os.Rename(newApp, currentApp); err != nil {
 		_ = os.RemoveAll(currentApp)
-		_ = os.Rename(backupPath, currentApp)
+		if restoreErr := os.Rename(backupPath, currentApp); restoreErr != nil {
+			return fmt.Errorf("更新失败，恢复旧版本失败：%v。请截图发给我。", restoreErr)
+		}
 		return fmt.Errorf("更新失败，已恢复旧版本。请截图发给我。")
+	}
+	if _, err := commandOutputFunc("xattr", "-cr", currentApp); err != nil {
+		return fmt.Errorf("更新已安装，但清除安全属性失败：%v。请截图发给我。", err)
+	}
+	return removeOldBackups(backupDir, backupPath)
+}
+
+func removeOldBackups(backupDir string, keepPath string) error {
+	matches, err := filepath.Glob(filepath.Join(backupDir, "ProxyCat-*.app"))
+	if err != nil {
+		return err
+	}
+	for _, match := range matches {
+		if match == keepPath {
+			continue
+		}
+		if err := os.RemoveAll(match); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -35,6 +35,9 @@ func fetchLatestRelease(client *http.Client, endpoint string) (Release, error) {
 	if resp.StatusCode == http.StatusForbidden {
 		return Release{}, fmt.Errorf("更新检查暂时不可用，请稍后重试")
 	}
+	if resp.StatusCode == http.StatusNotFound {
+		return Release{}, fmt.Errorf("还没有可用更新")
+	}
 	if resp.StatusCode != http.StatusOK {
 		return Release{}, fmt.Errorf("下载失败，请检查网络后重试")
 	}

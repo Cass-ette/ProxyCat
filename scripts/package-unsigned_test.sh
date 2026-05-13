@@ -49,6 +49,14 @@ if [[ ! -f "$INSTALLER_ZIP_PATH" ]]; then
     echo "expected installer package at $INSTALLER_ZIP_PATH" >&2
     exit 1
 fi
+if [[ ! -f "$INSTALLER_ZIP_PATH.sha256" ]]; then
+    echo "expected installer SHA256 sidecar at $INSTALLER_ZIP_PATH.sha256" >&2
+    exit 1
+fi
+if ! grep -q "$(shasum -a 256 "$INSTALLER_ZIP_PATH" | awk '{print $1}')" "$INSTALLER_ZIP_PATH.sha256"; then
+    echo "expected installer SHA256 sidecar to contain installer hash" >&2
+    exit 1
+fi
 
 CURRENT_HELPER_SHA="$(shasum -a 256 "$TMP_DIR/app/ProxyCat/ProxyCat/Resources/proxyctl" | awk '{print $1}')"
 if [[ "$CURRENT_HELPER_SHA" != "$ORIGINAL_HELPER_SHA" ]]; then
@@ -83,5 +91,13 @@ if [[ ! -x "$EXTRACT_DIR/ProxyCat 安装包/安装 ProxyCat.command" ]]; then
 fi
 if [[ ! -f "$EXTRACT_DIR/ProxyCat 安装包/安装说明.txt" ]]; then
     echo "expected installer instructions to exist" >&2
+    exit 1
+fi
+if ! grep -q '/usr/local/bin/proxycat' "$EXTRACT_DIR/ProxyCat 安装包/安装 ProxyCat.command"; then
+    echo "expected installer script to create /usr/local/bin/proxycat wrapper" >&2
+    exit 1
+fi
+if ! grep -q 'proxycat update' "$EXTRACT_DIR/ProxyCat 安装包/安装说明.txt"; then
+    echo "expected installer instructions to mention proxycat update" >&2
     exit 1
 fi

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -377,6 +378,18 @@ func TestSelectInsufficientArgs(t *testing.T) {
 
 	if !strings.Contains(stderr.String(), "requires") {
 		t.Fatalf("expected 'requires' in stderr, got: %s", stderr.String())
+	}
+}
+
+func TestAppPathFromProxyctlExecutable(t *testing.T) {
+	executable := filepath.Join("/Applications", "ProxyCat.app", "Contents", "Resources", "proxyctl")
+	got, err := appPathFromProxyctlExecutable(executable)
+	if err != nil {
+		t.Fatalf("appPathFromProxyctlExecutable returned error: %v", err)
+	}
+	want := filepath.Join("/Applications", "ProxyCat.app")
+	if got != want {
+		t.Fatalf("app path = %q, want %q", got, want)
 	}
 }
 

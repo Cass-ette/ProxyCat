@@ -80,9 +80,23 @@ cp -R "$APP_SOURCE" "$APP_DEST" 2>/dev/null || sudo cp -R "$APP_SOURCE" "$APP_DE
 
 xattr -cr "$APP_DEST" 2>/dev/null || true
 
+WRAPPER_DEST="/usr/local/bin/proxycat"
+WRAPPER_CONTENT='#!/bin/bash
+if [[ ! -x "/Applications/ProxyCat.app/Contents/Resources/proxyctl" ]]; then
+    echo "proxyctl 未找到，请重新安装 ProxyCat。" >&2
+    exit 1
+fi
+exec "/Applications/ProxyCat.app/Contents/Resources/proxyctl" "$@"
+'
+mkdir -p /usr/local/bin 2>/dev/null || sudo mkdir -p /usr/local/bin
+printf "%s" "$WRAPPER_CONTENT" > "$WRAPPER_DEST" 2>/dev/null || printf "%s" "$WRAPPER_CONTENT" | sudo tee "$WRAPPER_DEST" >/dev/null
+chmod +x "$WRAPPER_DEST" 2>/dev/null || sudo chmod +x "$WRAPPER_DEST"
+
 echo "安装完成，正在打开 ProxyCat..."
 open "$APP_DEST" || true
 
+echo ""
+echo "以后可以在终端输入 proxycat update 更新 ProxyCat。"
 echo ""
 echo "如果系统提示无法验证开发者："
 echo "1. 打开 系统设置 → 隐私与安全性"
@@ -100,8 +114,9 @@ ProxyCat 安装说明
 2. 如果系统拦截安装脚本，请右键“安装 ProxyCat.command”，选择“打开”，再点“打开”。
 3. 如果安装过程要求输入密码，请输入你的 Mac 登录密码。输入时屏幕上不会显示字符，这是正常的。
 4. 安装后 ProxyCat 会尝试自动打开，并出现在屏幕顶部菜单栏。
-5. 如果系统提示“无法验证开发者”，请打开：系统设置 → 隐私与安全性 → 安全性，找到 ProxyCat 被阻止的提示，点击“仍要打开”。
-6. 打开后点击菜单栏里的 ProxyCat 图标，粘贴订阅链接，然后点击“一键启动”。
+5. 以后可以在终端输入 proxycat update 更新 ProxyCat。
+6. 如果系统提示“无法验证开发者”，请打开：系统设置 → 隐私与安全性 → 安全性，找到 ProxyCat 被阻止的提示，点击“仍要打开”。
+7. 打开后点击菜单栏里的 ProxyCat 图标，粘贴订阅链接，然后点击“一键启动”。
 
 如果遇到问题，把安装窗口里的提示截图发给我。
 README
@@ -110,8 +125,10 @@ README
     cd "$INSTALLER_WORKDIR"
     ditto -c -k --sequesterRsrc --keepParent "$INSTALLER_DIR_NAME" "$INSTALLER_ZIP_PATH"
 )
+(cd "$DIST_DIR" && shasum -a 256 "$(basename "$INSTALLER_ZIP_PATH")") > "$INSTALLER_ZIP_PATH.sha256"
 rm -rf "$INSTALLER_WORKDIR"
 
 echo "Package created: $ZIP_PATH"
 echo "Installer package created: $INSTALLER_ZIP_PATH"
+echo "Installer SHA256 created: $INSTALLER_ZIP_PATH.sha256"
 echo "Share the installer zip with non-technical users. They should unzip it and double-click 安装 ProxyCat.command."

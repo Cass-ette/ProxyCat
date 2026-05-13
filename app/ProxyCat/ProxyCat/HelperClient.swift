@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 
 enum HelperError: Error, LocalizedError {
     case executableNotFound
@@ -155,6 +156,94 @@ actor HelperClient {
     func updateSubscription() async -> Result<Void, HelperError> {
         let result = await runCommand(["subscription", "update"])
         return result.map { _ in () }
+    }
+
+    func checkForUpdate() async -> Result<UpdateEvent, HelperError> {
+        let result = await runCommand(["self-update", "--check-only", "--json"])
+        return result.flatMap { data in
+            decodeLastUpdateEvent(from: data)
+        }
+    }
+
+    private func decodeLastUpdateEvent(from data: Data) -> Result<UpdateEvent, HelperError> {
+        let decoder = JSONDecoder()
+        var events: [UpdateEvent] = []
+        let lines = String(data: data, encoding: .utf8)?
+            .split(whereSeparator: { $0.isNewline }) ?? []
+        for line in lines {
+            if let event = try? decoder.decode(UpdateEvent.self, from: Data(line.utf8)) {
+                events.append(event)
+            } else {
+                os_log("self-update: skipping malformed NDJSON line: %{public}@", String(line))
+            }
+        }
+        guard let event = events.last else {
+            return .failure(.invalidOutput)
+        }
+        return .success(event)
+    }
+
+    func installUpdate() -> AsyncStream<UpdateEvent> {
+        AsyncStream { continuation in
+            Task {
+                guard let executable = getProxyctlPath() else {
+                    continuation.yield(UpdateEvent(stage: "error", message: "proxyctl not found", progress: nil, newVersion: nil))
+                    continuation.finish()
+                    return
+                }
+
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: executable)
+                task.arguments = ["self-update", "--json"]
+
+                let outputPipe = Pipe()
+                let errorPipe = Pipe()
+                task.standardOutput = outputPipe
+                task.standardError = errorPipe
+
+                let decoder = JSONDecoder()
+                var buffer = Data()
+                outputPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty else { return }
+                    buffer.append(data)
+                    while let newline = buffer.firstIndex(of: 10) {
+                        let line = buffer[..<newline]
+                        buffer.removeSubrange(...newline)
+                        if let event = try? decoder.decode(UpdateEvent.self, from: Data(line)) {
+                            continuation.yield(event)
+                        } else {
+                            os_log("self-update: skipping malformed NDJSON line: %{public}@", String(decoding: line, as: UTF8.self))
+                        }
+                    }
+                }
+
+                errorPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !message.isEmpty {
+                        continuation.yield(UpdateEvent(stage: "error", message: message, progress: nil, newVersion: nil))
+                    }
+                }
+
+                task.terminationHandler = { _ in
+                    outputPipe.fileHandleForReading.readabilityHandler = nil
+                    errorPipe.fileHandleForReading.readabilityHandler = nil
+                    if !buffer.isEmpty,
+                       let event = try? decoder.decode(UpdateEvent.self, from: buffer) {
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                }
+
+                do {
+                    try task.run()
+                } catch {
+                    continuation.yield(UpdateEvent(stage: "error", message: error.localizedDescription, progress: nil, newVersion: nil))
+                    continuation.finish()
+                }
+            }
+        }
     }
 
     func runDiagnose() async -> Result<DiagnoseReport, HelperError> {

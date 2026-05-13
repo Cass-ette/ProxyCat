@@ -203,16 +203,36 @@ func containsArg(args []string, target string) bool {
 }
 
 func runSelfUpdate(stdout io.Writer, stderr io.Writer, jsonOutput bool, checkOnly bool) int {
-	if !checkOnly {
-		fmt.Fprintln(stderr, "self-update install is not available until a GitHub Release asset exists")
+	executable, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve executable: %v\n", err)
 		return 1
 	}
+	appPath, err := appPathFromProxyctlExecutable(executable)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve app path: %v\n", err)
+		return 1
+	}
+
+	currentVersion, err := selfupdate.ReadBundleVersion(appPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "read current version: %v\n", err)
+		return 1
+	}
+
 	runner := selfupdate.Runner{
-		CurrentVersion: "0.1.0",
-		Latest:         selfupdate.Release{Version: "0.1.0"},
-		CheckOnly:      true,
+		CurrentVersion: currentVersion,
+		CheckOnly:      checkOnly,
+		Client:         &http.Client{},
+		Endpoint:       "https://api.github.com/repos/Cass-ette/ProxyCat/releases/latest",
+		AppPath:        appPath,
+		BackupDir:      filepath.Join(filepath.Dir(appPath), "ProxyCat-Backups"),
 	}
 	return runner.Run(stdout, jsonOutput)
+}
+
+func appPathFromProxyctlExecutable(executable string) (string, error) {
+	return filepath.Abs(filepath.Join(filepath.Dir(executable), "..", ".."))
 }
 
 func runBootstrap(url string, stdout io.Writer, stderr io.Writer) int {

@@ -18,6 +18,11 @@ class StatusViewModel: ObservableObject {
     @Published var proxyDelays: [String: ProxyDelayResult] = [:]
     @Published var isTestingDelays = false
     @Published var bootstrapStatus: String = ""
+    @Published var updateStatus: String = ""
+    @Published var updateProgress: Int?
+    @Published var availableUpdateVersion: String?
+    @Published var isCheckingForUpdate = false
+    @Published var isInstallingUpdate = false
 
     private let helper = HelperClient.shared
     private var refreshTimer: Timer?
@@ -167,6 +172,44 @@ class StatusViewModel: ObservableObject {
         let result = await helper.updateSubscription()
         if case .failure(let error) = result {
             lastError = "Update failed: \(error.localizedDescription)"
+        }
+    }
+
+    func checkForUpdate() async {
+        isCheckingForUpdate = true
+        updateStatus = "正在检查更新..."
+        updateProgress = nil
+        availableUpdateVersion = nil
+        defer { isCheckingForUpdate = false }
+
+        let result = await helper.checkForUpdate()
+        switch result {
+        case .success(let event):
+            updateStatus = event.message
+            updateProgress = event.progress
+            availableUpdateVersion = event.newVersion
+            lastError = event.stage == "error" ? event.message : nil
+        case .failure(let error):
+            updateStatus = ""
+            lastError = "检查更新失败：\(error.localizedDescription)"
+        }
+    }
+
+    func installUpdate() async {
+        isInstallingUpdate = true
+        updateStatus = "正在准备更新..."
+        updateProgress = nil
+        lastError = nil
+        defer { isInstallingUpdate = false }
+
+        let stream = await helper.installUpdate()
+        for await event in stream {
+            updateStatus = event.message
+            updateProgress = event.progress
+            availableUpdateVersion = event.stage == "done" ? nil : (event.newVersion ?? availableUpdateVersion)
+            if event.stage == "error" {
+                lastError = event.message
+            }
         }
     }
 

@@ -35,6 +35,21 @@ func TestFetchLatestReleaseFindsStrictInstallerAndSHA(t *testing.T) {
 	}
 }
 
+func TestFetchLatestReleaseReportsNoRelease(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	_, err := fetchLatestRelease(server.Client(), server.URL)
+	if err == nil {
+		t.Fatal("expected no release error")
+	}
+	if err.Error() != "还没有可用更新" {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
 func TestFetchLatestReleaseRejectsMissingSHA(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
