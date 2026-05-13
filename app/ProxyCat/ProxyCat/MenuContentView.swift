@@ -4,6 +4,7 @@ struct MenuContentView: View {
     @ObservedObject var viewModel: StatusViewModel
     @State private var subscriptionURL: String = ""
     @State private var isBootstrapping: Bool = false
+    @State private var nodesExpanded: Bool = true
 
     var body: some View {
         ScrollView {
@@ -170,10 +171,33 @@ struct MenuContentView: View {
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 16)
             } else {
-                ScrollView {
-                    proxyGroupControls
+                HStack {
+                    Text("节点")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            nodesExpanded.toggle()
+                        }
+                    }) {
+                        Image(systemName: nodesExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.secondary)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
-                .frame(maxHeight: 320)
+                .padding(.horizontal, 16)
+
+                if nodesExpanded {
+                    ScrollView {
+                        proxyGroupControls
+                    }
+                    .frame(maxHeight: 320)
+                    .transition(.opacity)
+                }
             }
         }
         .padding(.bottom, 8)
