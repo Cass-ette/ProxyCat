@@ -53,3 +53,10 @@ struct CheckResult: Codable {
     let message: String
     let suggestedFix: String?
 }
+
+struct UpdateEvent: Codable {
+    let stage: String
+    let message: String
+    let progress: Int?
+    let newVersion: String?
+}

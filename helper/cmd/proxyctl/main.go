@@ -15,6 +15,7 @@ import (
 	"github.com/Cass-ette/ProxyCat/helper/internal/diagnose"
 	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
 	"github.com/Cass-ette/ProxyCat/helper/internal/redact"
+	"github.com/Cass-ette/ProxyCat/helper/internal/selfupdate"
 	"github.com/Cass-ette/ProxyCat/helper/internal/subscription"
 	"github.com/Cass-ette/ProxyCat/helper/internal/sysproxy"
 )
@@ -172,6 +173,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	case "test":
 		return runTestJSON(stdout, stderr, jsonOutput)
 
+	case "self-update":
+		return runSelfUpdate(stdout, stderr, jsonOutput, containsArg(args[1:], "--check-only"))
+
+	case "update":
+		return runSelfUpdate(stdout, stderr, jsonOutput, containsArg(args[1:], "--check-only"))
+
 	case "select":
 		if len(args) < 3 {
 			fmt.Fprintf(stderr, "select requires group and proxy arguments\n")
@@ -184,6 +191,48 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		printHelp(stderr)
 		return 2
 	}
+}
+
+func containsArg(args []string, target string) bool {
+	for _, arg := range args {
+		if arg == target {
+			return true
+		}
+	}
+	return false
+}
+
+func runSelfUpdate(stdout io.Writer, stderr io.Writer, jsonOutput bool, checkOnly bool) int {
+	executable, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve executable: %v\n", err)
+		return 1
+	}
+	appPath, err := appPathFromProxyctlExecutable(executable)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve app path: %v\n", err)
+		return 1
+	}
+
+	currentVersion, err := selfupdate.ReadBundleVersion(appPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "read current version: %v\n", err)
+		return 1
+	}
+
+	runner := selfupdate.Runner{
+		CurrentVersion: currentVersion,
+		CheckOnly:      checkOnly,
+		Client:         &http.Client{},
+		Endpoint:       "https://api.github.com/repos/Cass-ette/ProxyCat/releases/latest",
+		AppPath:        appPath,
+		BackupDir:      filepath.Join(filepath.Dir(appPath), "ProxyCat-Backups"),
+	}
+	return runner.Run(stdout, jsonOutput)
+}
+
+func appPathFromProxyctlExecutable(executable string) (string, error) {
+	return filepath.Abs(filepath.Join(filepath.Dir(executable), "..", ".."))
 }
 
 func runBootstrap(url string, stdout io.Writer, stderr io.Writer) int {
@@ -291,6 +340,8 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl groups delay [--json]")
 	fmt.Fprintln(w, "  proxyctl groups select <group> <proxy>")
 	fmt.Fprintln(w, "  proxyctl test")
+	fmt.Fprintln(w, "  proxyctl self-update [--json] [--check-only]")
+	fmt.Fprintln(w, "  proxyctl update [--json] [--check-only]")
 	fmt.Fprintln(w, "  proxyctl select <group> <proxy>")
 }
 
