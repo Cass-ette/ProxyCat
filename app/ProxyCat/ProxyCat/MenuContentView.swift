@@ -617,6 +617,9 @@ struct VisualEffectView: NSViewRepresentable {
         view.material = material
         view.blendingMode = blendingMode
         view.state = .active
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 8
+        view.layer?.masksToBounds = true
         return view
     }
 
