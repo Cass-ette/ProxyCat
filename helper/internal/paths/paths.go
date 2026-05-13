@@ -15,6 +15,7 @@ type RuntimePaths struct {
 	Config            string `json:"config"`
 	ConfigYAML        string `json:"configYaml"`
 	SubscriptionsJSON string `json:"subscriptionsJson"`
+	ProfilesDir       string `json:"profilesDir"`
 	Backups           string `json:"backups"`
 	Logs              string `json:"logs"`
 	ProxyCatLog       string `json:"proxycatLog"`
@@ -35,6 +36,7 @@ func ForHome(home string) RuntimePaths {
 	base := filepath.Join(home, "Library", "Application Support", appName)
 	bin := filepath.Join(base, "bin")
 	config := filepath.Join(base, "config")
+	profiles := filepath.Join(config, "profiles")
 	logs := filepath.Join(base, "logs")
 	reports := filepath.Join(base, "reports")
 
@@ -47,6 +49,7 @@ func ForHome(home string) RuntimePaths {
 		ConfigYAML:        filepath.Join(config, "config.yaml"),
 		SubscriptionsJSON: filepath.Join(config, "subscriptions.json"),
 		Backups:           filepath.Join(config, "backups"),
+		ProfilesDir:       profiles,
 		Logs:              logs,
 		ProxyCatLog:       filepath.Join(logs, "proxycat.log"),
 		MihomoLog:         filepath.Join(logs, "mihomo.log"),

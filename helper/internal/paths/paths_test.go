@@ -30,6 +30,9 @@ func TestForHomeBuildsProxyCatRuntimePaths(t *testing.T) {
 	if p.Backups != wantBase+"/config/backups" {
 		t.Fatalf("Backups = %q", p.Backups)
 	}
+	if p.ProfilesDir != wantBase+"/config/profiles" {
+		t.Fatalf("ProfilesDir = %q", p.ProfilesDir)
+	}
 	if p.Logs != wantBase+"/logs" {
 		t.Fatalf("Logs = %q", p.Logs)
 	}
