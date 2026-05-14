@@ -25,13 +25,16 @@ func TestRunReportsStaticLocalChecks(t *testing.T) {
 	if report.Milestone != "milestone-1" {
 		t.Fatalf("Milestone = %q", report.Milestone)
 	}
-	if len(report.Checks) != 4 {
-		t.Fatalf("len(Checks) = %d, want 4", len(report.Checks))
+	if len(report.Checks) != 5 {
+		t.Fatalf("len(Checks) = %d, want 5", len(report.Checks))
 	}
 
 	checks := checksByName(report.Checks)
 	if checks["runtime-paths"].Status != StatusPass {
 		t.Fatalf("runtime-paths status = %q", checks["runtime-paths"].Status)
+	}
+	if checks["profiles-storage"].Status != StatusWarn {
+		t.Fatalf("profiles-storage status = %q", checks["profiles-storage"].Status)
 	}
 	if checks["subscription-storage"].Status != StatusPass {
 		t.Fatalf("subscription-storage status = %q", checks["subscription-storage"].Status)

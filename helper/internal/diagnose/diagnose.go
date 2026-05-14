@@ -33,6 +33,7 @@ func Run(p paths.RuntimePaths) Report {
 		Milestone: "milestone-1",
 		Checks: []Check{
 			checkRuntimePaths(p),
+			checkProfilesStorage(p),
 			checkSubscriptionStorage(p),
 			checkGeneratedConfig(p),
 			checkMihomoBinary(p),
@@ -45,6 +46,14 @@ func checkRuntimePaths(p paths.RuntimePaths) Check {
 		return Check{Name: "runtime-paths", Status: StatusFail, Message: "Runtime paths are incomplete.", SuggestedFix: "Check ProxyCat path configuration."}
 	}
 	return Check{Name: "runtime-paths", Status: StatusPass, Message: "Runtime paths resolved."}
+}
+
+func checkProfilesStorage(p paths.RuntimePaths) Check {
+	info, err := os.Stat(p.ProfilesDir)
+	if err == nil && info.IsDir() {
+		return Check{Name: "profiles-storage", Status: StatusPass, Message: "Profiles directory exists."}
+	}
+	return Check{Name: "profiles-storage", Status: StatusWarn, Message: "No profiles yet.", SuggestedFix: "Add a subscription to create a profile."}
 }
 
 func checkSubscriptionStorage(p paths.RuntimePaths) Check {
