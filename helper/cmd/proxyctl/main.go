@@ -190,7 +190,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	case "profile":
 		if len(args) < 2 {
-			fmt.Fprintf(stderr, "profile subcommand required: list, activate\n")
+			fmt.Fprintf(stderr, "profile subcommand required: list, activate, delete\n")
 			return 2
 		}
 		switch args[1] {
@@ -202,6 +202,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				return 2
 			}
 			return runProfileActivate(args[2], stdout, stderr)
+		case "delete":
+			if len(args) < 3 {
+				fmt.Fprintf(stderr, "profile delete requires <id>\n")
+				return 2
+			}
+			return runProfileDelete(args[2], stdout, stderr)
 		default:
 			fmt.Fprintf(stderr, "unknown profile subcommand: %s\n", redact.String(args[1]))
 			return 2
@@ -378,6 +384,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl select <group> <proxy>")
 	fmt.Fprintln(w, "  proxyctl profile list [--json]")
 	fmt.Fprintln(w, "  proxyctl profile activate <id>")
+	fmt.Fprintln(w, "  proxyctl profile delete <id>")
 }
 
 func runCoreInstall(stdout io.Writer, stderr io.Writer) int {
@@ -1176,5 +1183,19 @@ func runProfileActivate(profileID string, stdout io.Writer, stderr io.Writer) in
 		return 1
 	}
 	fmt.Fprintf(stdout, "Activated profile %s\n", profileID)
+	return 0
+}
+
+func runProfileDelete(profileID string, stdout io.Writer, stderr io.Writer) int {
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+	if err := profile.Delete(runtimePaths.ProfilesDir, profileID); err != nil {
+		fmt.Fprintf(stderr, "delete profile: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Deleted profile %s\n", profileID)
 	return 0
 }

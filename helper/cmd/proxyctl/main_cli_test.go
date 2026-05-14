@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -525,5 +526,49 @@ func TestProfileListJSONRedactsSubscriptionURL(t *testing.T) {
 	}
 	if len(decoded) != 1 || !strings.Contains(decoded[0].URL, "redacted") {
 		t.Fatalf("URL was not redacted: %+v", decoded)
+	}
+}
+
+func TestProfileDeleteCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	profileDir := filepath.Join(runtimePaths.ProfilesDir, "a1b2c3d4")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "config.yaml"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profilesData, _ := json.Marshal([]profile.Profile{
+		{ID: "a1b2c3d4", Name: "ToDelete", URL: "https://x.com/sub"},
+	})
+	if err := os.WriteFile(filepath.Join(runtimePaths.ProfilesDir, "profiles.json"), profilesData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := run([]string{"profile", "delete", "a1b2c3d4"}, &stdout, &stderr)
+
+	if exitCode != 0 {
+		t.Fatalf("exit=%d stderr=%s", exitCode, stderr.String())
+	}
+	if !strings.Contains(strings.ToLower(stdout.String()), "deleted") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+
+	data, err := os.ReadFile(filepath.Join(runtimePaths.ProfilesDir, "profiles.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var remaining []profile.Profile
+	if err := json.Unmarshal(data, &remaining); err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected 0 profiles, got %d", len(remaining))
 	}
 }
