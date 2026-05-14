@@ -263,6 +263,16 @@ class StatusViewModel: ObservableObject {
         await refreshStatus()
     }
 
+    func deleteProfile(id: String) async {
+        let result = await helper.deleteProfile(id: id)
+        switch result {
+        case .success:
+            await loadProfiles()
+        case .failure(let error):
+            lastError = "Delete profile failed: \(error.localizedDescription)"
+        }
+    }
+
     func bootstrap(subscriptionURL: String) async {
         bootstrapStatus = "正在启动..."
         lastError = nil

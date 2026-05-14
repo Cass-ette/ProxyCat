@@ -342,6 +342,11 @@ actor HelperClient {
         return result.map { _ in () }
     }
 
+    func deleteProfile(id: String) async -> Result<Void, HelperError> {
+        let result = await runCommand(["profile", "delete", id])
+        return result.map { _ in () }
+    }
+
     func bootstrap(subscriptionURL: String) -> AsyncStream<String> {
         AsyncStream { continuation in
             Task {
