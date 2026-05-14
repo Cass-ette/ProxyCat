@@ -104,26 +104,48 @@ struct MenuContentView: View {
                 .padding(.top, 8)
 
             ForEach(viewModel.profiles) { p in
-                Button(action: {
-                    Task { await viewModel.activateProfile(id: p.id) }
-                }) {
-                    HStack {
-                        Image(systemName: viewModel.activeProfileID == p.id ? "checkmark.circle.fill" : "circle")
-                            .frame(width: 20)
-                            .foregroundColor(viewModel.activeProfileID == p.id ? .accentColor : .secondary)
+                HStack {
+                    Image(systemName: viewModel.activeProfileID == p.id ? "checkmark.circle.fill" : "circle")
+                        .frame(width: 20)
+                        .foregroundColor(viewModel.activeProfileID == p.id ? .accentColor : .secondary)
+                    Button(action: {
+                        Task { await viewModel.activateProfile(id: p.id) }
+                    }) {
                         Text(p.name)
                             .lineLimit(1)
-                        Spacer()
                     }
-                    .font(.system(size: 12))
+                    .buttonStyle(PlainButtonStyle())
+                    Spacer()
+                    Button(action: {
+                        showDeleteConfirmation(for: p)
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .disabled(p.active)
+                    .help(p.active ? "无法删除正在使用的配置" : "")
                 }
-                .buttonStyle(PlainButtonStyle())
+                .font(.system(size: 12))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 3)
                 .contentShape(Rectangle())
             }
         }
         .padding(.bottom, 8)
+    }
+
+    private func showDeleteConfirmation(for profile: Profile) {
+        let alert = NSAlert()
+        alert.messageText = "删除配置"
+        alert.informativeText = "确定要删除「\(profile.name)」吗？此操作无法撤销。"
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "删除")
+        alert.alertStyle = .critical
+        if alert.runModal() == .alertSecondButtonReturn {
+            Task { await viewModel.deleteProfile(id: profile.id) }
+        }
     }
 
     private var quickStartSection: some View {
