@@ -38,7 +38,7 @@ func TestDiagnoseJSONCommand(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
 	}
-	if decoded.App != "ProxyCat" || decoded.Milestone != "milestone-1" || len(decoded.Checks) != 4 {
+	if decoded.App != "ProxyCat" || decoded.Milestone != "milestone-1" || len(decoded.Checks) != 5 {
 		t.Fatalf("unexpected diagnose output: %+v", decoded)
 	}
 	for _, check := range decoded.Checks {
