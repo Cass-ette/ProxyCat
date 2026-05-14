@@ -871,6 +871,55 @@ func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
+	// Try profile-based update first
+	profiles, err := profile.LoadAll(runtimePaths.ProfilesDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "load profiles: %v\n", err)
+		return 1
+	}
+
+	if len(profiles) > 0 {
+		client := &http.Client{}
+		for i, p := range profiles {
+			probe := subscription.Probe(client, p.URL)
+			if probe.Selected == nil {
+				fmt.Fprintf(stdout, "Profile %s (%s): invalid - %s\n", p.ID, p.Name, probe.Message)
+				if probe.SuggestedFix != "" {
+					fmt.Fprintf(stdout, "  建议：%s\n", probe.SuggestedFix)
+				}
+				continue
+			}
+			profiles[i].UpdatedAt = time.Now()
+			format := config.Format(probe.Selected.Format)
+			content := probe.SelectedContent
+			var configYAML string
+			switch format {
+			case config.FormatClashYAML:
+				configYAML, err = config.NormalizeClashYAML(content)
+			case config.FormatBase64List, config.FormatPlainList:
+				configYAML, err = config.ConvertURIToYAML(content, format)
+			default:
+				err = fmt.Errorf("unknown format: %s", format)
+			}
+			if err != nil {
+				fmt.Fprintf(stdout, "Profile %s: generate failed: %v\n", p.ID, err)
+				continue
+			}
+			pDir, _ := profile.EnsureProfileDir(runtimePaths.ProfilesDir, p.ID)
+			if err := os.WriteFile(filepath.Join(pDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+				fmt.Fprintf(stdout, "Profile %s: write failed: %v\n", p.ID, err)
+				continue
+			}
+			fmt.Fprintf(stdout, "Profile %s (%s): updated\n", p.ID, p.Name)
+		}
+		if err := profile.SaveAll(runtimePaths.ProfilesDir, profiles); err != nil {
+			fmt.Fprintf(stderr, "save profiles: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	// Legacy fallback: subscriptions.json
 	records, err := subscription.Load(runtimePaths.SubscriptionsJSON)
 	if err != nil {
 		fmt.Fprintf(stderr, "load subscriptions: %v\n", err)
