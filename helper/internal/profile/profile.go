@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -88,4 +89,29 @@ func ProfileConfigPath(profilesDir string, profileID string) string {
 func EnsureProfileDir(profilesDir string, profileID string) (string, error) {
 	p := filepath.Join(profilesDir, profileID)
 	return p, os.MkdirAll(p, 0o755)
+}
+
+func Delete(profilesDir string, profileID string) error {
+	profiles, err := LoadAll(profilesDir)
+	if err != nil {
+		return err
+	}
+	found := -1
+	for i, p := range profiles {
+		if p.ID == profileID {
+			found = i
+			break
+		}
+	}
+	if found == -1 {
+		return fmt.Errorf("profile not found: %s", profileID)
+	}
+	if profiles[found].Active {
+		return fmt.Errorf("cannot delete active profile")
+	}
+	profiles = append(profiles[:found], profiles[found+1:]...)
+	if err := SaveAll(profilesDir, profiles); err != nil {
+		return err
+	}
+	return os.RemoveAll(filepath.Join(profilesDir, profileID))
 }

@@ -106,3 +106,83 @@ func TestNextID(t *testing.T) {
 		t.Fatalf("NextID returned same ID %q", id2)
 	}
 }
+
+func TestDeleteRemovesProfile(t *testing.T) {
+	dir := t.TempDir()
+	profilesDir := filepath.Join(dir, "profiles")
+
+	p1 := Profile{ID: "a1", Name: "Active", URL: "https://a.com/sub"}
+	p2 := Profile{ID: "b2", Name: "Other", URL: "https://b.com/sub"}
+	for _, p := range []Profile{p1, p2} {
+		profileDir := filepath.Join(profilesDir, p.ID)
+		if err := os.MkdirAll(profileDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(profileDir, "config.yaml"), []byte("test\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := SaveAll(profilesDir, []Profile{p1, p2}); err != nil {
+		t.Fatal(err)
+	}
+	activeConfig := filepath.Join(dir, "config.yaml")
+	if err := Activate(profilesDir, p1.ID, activeConfig); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Delete(profilesDir, p2.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	loaded, err := LoadAll(profilesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || loaded[0].ID != "a1" {
+		t.Fatalf("got %+v, want only a1", loaded)
+	}
+	if _, err := os.Stat(filepath.Join(profilesDir, p2.ID)); !os.IsNotExist(err) {
+		t.Fatal("profile directory should be removed")
+	}
+}
+
+func TestDeleteActiveProfileFails(t *testing.T) {
+	dir := t.TempDir()
+	profilesDir := filepath.Join(dir, "profiles")
+
+	p := Profile{ID: "a1", Name: "Active", URL: "https://a.com/sub"}
+	profileDir := filepath.Join(profilesDir, p.ID)
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "config.yaml"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAll(profilesDir, []Profile{p}); err != nil {
+		t.Fatal(err)
+	}
+	activeConfig := filepath.Join(dir, "config.yaml")
+	if err := Activate(profilesDir, p.ID, activeConfig); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Delete(profilesDir, p.ID)
+	if err == nil {
+		t.Fatal("should reject deleting active profile")
+	}
+}
+
+func TestDeleteNonexistentFails(t *testing.T) {
+	dir := t.TempDir()
+	profilesDir := filepath.Join(dir, "profiles")
+	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAll(profilesDir, []Profile{}); err != nil {
+		t.Fatal(err)
+	}
+	err := Delete(profilesDir, "nonexistent")
+	if err == nil {
+		t.Fatal("should reject deleting nonexistent profile")
+	}
+}
