@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -752,7 +753,7 @@ func saveProfileSubscription(url string) (string, error) {
 	id := profile.NextID(runtimePaths.ProfilesDir)
 	p := profile.Profile{
 		ID:        id,
-		Name:      "Subscription",
+		Name:      uniqueProfileName(defaultProfileName(url, len(profiles)+1), profiles),
 		URL:       url,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -765,6 +766,30 @@ func saveProfileSubscription(url string) (string, error) {
 		return "", err
 	}
 	return id, nil
+}
+
+func defaultProfileName(rawURL string, fallbackIndex int) string {
+	parsed, err := url.Parse(rawURL)
+	if err == nil && parsed.Hostname() != "" {
+		return parsed.Hostname()
+	}
+	return fmt.Sprintf("Subscription %d", fallbackIndex)
+}
+
+func uniqueProfileName(base string, profiles []profile.Profile) string {
+	used := make(map[string]bool, len(profiles))
+	for _, p := range profiles {
+		used[p.Name] = true
+	}
+	if !used[base] {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s %d", base, i)
+		if !used[candidate] {
+			return candidate
+		}
+	}
 }
 
 func runSubscriptionAdd(url string, stdout io.Writer, stderr io.Writer) int {
@@ -1115,7 +1140,7 @@ func runProfileList(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 		return 1
 	}
 	if jsonOutput {
-		if err := json.NewEncoder(stdout).Encode(profiles); err != nil {
+		if err := json.NewEncoder(stdout).Encode(redactedProfiles(profiles)); err != nil {
 			fmt.Fprintf(stderr, "encode profiles: %v\n", err)
 			return 1
 		}
@@ -1129,6 +1154,15 @@ func runProfileList(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 		fmt.Fprintf(stdout, "%s  %s  (%s)\n", p.ID, p.Name, redact.URL(p.URL))
 	}
 	return 0
+}
+
+func redactedProfiles(profiles []profile.Profile) []profile.Profile {
+	redacted := make([]profile.Profile, len(profiles))
+	copy(redacted, profiles)
+	for i := range redacted {
+		redacted[i].URL = redact.URL(redacted[i].URL)
+	}
+	return redacted
 }
 
 func runProfileActivate(profileID string, stdout io.Writer, stderr io.Writer) int {

@@ -2,9 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
+	"github.com/Cass-ette/ProxyCat/helper/internal/profile"
 )
 
 // TestCoreCommands tests the core subcommands
@@ -454,5 +459,71 @@ func TestProfileActivateMissingID(t *testing.T) {
 	exitCode := run([]string{"profile", "activate"}, stdout, stderr)
 	if exitCode != 2 {
 		t.Fatalf("exitCode = %d, want 2", exitCode)
+	}
+}
+
+func TestSaveProfileSubscriptionGeneratesDistinctDefaultNames(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	firstID, err := saveProfileSubscription("https://alpha.example.com/sub?token=a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := saveProfileSubscription("https://alpha.example.com/other?token=b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID == secondID {
+		t.Fatalf("expected distinct IDs")
+	}
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := profile.LoadAll(runtimePaths.ProfilesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("got %d profiles, want 2", len(profiles))
+	}
+	if profiles[0].Name == profiles[1].Name {
+		t.Fatalf("profile names should be distinct: %+v", profiles)
+	}
+}
+
+func TestProfileListJSONRedactsSubscriptionURL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := []profile.Profile{
+		{
+			ID:        "p1",
+			Name:      "Example",
+			URL:       "https://example.com/sub?token=secret-token",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
+	}
+	if err := profile.SaveAll(runtimePaths.ProfilesDir, profiles); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"profile", "list", "--json"}, stdout, stderr)
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "secret-token") {
+		t.Fatalf("profile list leaked token: %s", stdout.String())
+	}
+	var decoded []profile.Profile
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if len(decoded) != 1 || !strings.Contains(decoded[0].URL, "redacted") {
+		t.Fatalf("URL was not redacted: %+v", decoded)
 	}
 }
