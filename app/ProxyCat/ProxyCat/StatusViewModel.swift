@@ -24,6 +24,8 @@ class StatusViewModel: ObservableObject {
     @Published var isCheckingForUpdate = false
     @Published var isInstallingUpdate = false
     @Published var showRestartAlert = false
+    @Published var profiles: [Profile] = []
+    @Published var activeProfileID: String?
     @Published var updateFailed = false
 
     private let helper = HelperClient.shared
@@ -86,6 +88,8 @@ class StatusViewModel: ObservableObject {
             currentGroup = ""
             currentNode = ""
         }
+
+        await loadProfiles()
     }
 
     func enableSystemProxy() async {
@@ -232,6 +236,31 @@ class StatusViewModel: ObservableObject {
         case .failure(let error):
             lastError = "Diagnose failed: \(error.localizedDescription)"
         }
+    }
+
+    func loadProfiles() async {
+        let result = await helper.getProfiles()
+        switch result {
+        case .success(let p):
+            profiles = p
+            activeProfileID = p.first(where: { $0.active })?.id
+        case .failure:
+            profiles = []
+        }
+    }
+
+    func activateProfile(id: String) async {
+        let result = await helper.activateProfile(id: id)
+        if case .failure(let error) = result {
+            lastError = "Activate profile failed: \(error.localizedDescription)"
+            return
+        }
+        activeProfileID = id
+        let restartResult = await helper.restartCore()
+        if case .failure(let error) = restartResult {
+            lastError = "Restart core failed: \(error.localizedDescription)"
+        }
+        await refreshStatus()
     }
 
     func bootstrap(subscriptionURL: String) async {

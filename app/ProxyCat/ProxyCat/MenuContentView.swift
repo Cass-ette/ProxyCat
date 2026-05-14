@@ -12,6 +12,11 @@ struct MenuContentView: View {
                 // Header - ProxyCat On/Off
                 headerSection
 
+                if !viewModel.profiles.isEmpty {
+                    Divider()
+                    profileSection
+                }
+
                 Divider()
 
                 // Quick Start section - 一键启动
@@ -88,6 +93,37 @@ struct MenuContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    private var profileSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("配置")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+            ForEach(viewModel.profiles) { p in
+                Button(action: {
+                    Task { await viewModel.activateProfile(id: p.id) }
+                }) {
+                    HStack {
+                        Image(systemName: viewModel.activeProfileID == p.id ? "checkmark.circle.fill" : "circle")
+                            .frame(width: 20)
+                            .foregroundColor(viewModel.activeProfileID == p.id ? .accentColor : .secondary)
+                        Text(p.name)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .font(.system(size: 12))
+                }
+                .buttonStyle(PlainButtonStyle())
+                .padding(.horizontal, 16)
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+        }
+        .padding(.bottom, 8)
     }
 
     private var quickStartSection: some View {

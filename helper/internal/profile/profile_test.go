@@ -82,6 +82,13 @@ func TestActivateWritesConfig(t *testing.T) {
 	if string(data) != "mixed-port: 7890\n" {
 		t.Fatalf("active config = %q", string(data))
 	}
+	loaded, err := LoadAll(profilesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || !loaded[0].Active {
+		t.Fatalf("active profile not marked: %+v", loaded)
+	}
 }
 
 func TestNextID(t *testing.T) {

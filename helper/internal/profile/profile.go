@@ -15,6 +15,7 @@ type Profile struct {
 	URL       string    `json:"url"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	Active    bool      `json:"active"`
 }
 
 const indexFile = "profiles.json"
@@ -67,7 +68,17 @@ func Activate(profilesDir string, profileID string, activeConfigPath string) err
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(activeConfigPath, data, 0o644)
+	if err := os.WriteFile(activeConfigPath, data, 0o644); err != nil {
+		return err
+	}
+	profiles, err := LoadAll(profilesDir)
+	if err != nil {
+		return err
+	}
+	for i := range profiles {
+		profiles[i].Active = profiles[i].ID == profileID
+	}
+	return SaveAll(profilesDir, profiles)
 }
 
 func ProfileConfigPath(profilesDir string, profileID string) string {

@@ -325,6 +325,23 @@ actor HelperClient {
         return result.map { _ in () }
     }
 
+    func getProfiles() async -> Result<[Profile], HelperError> {
+        let result = await runCommand(["profile", "list", "--json"])
+        return result.flatMap { data in
+            do {
+                let profiles = try JSONDecoder().decode([Profile].self, from: data)
+                return .success(profiles)
+            } catch {
+                return .failure(.decodingFailed(error))
+            }
+        }
+    }
+
+    func activateProfile(id: String) async -> Result<Void, HelperError> {
+        let result = await runCommand(["profile", "activate", id])
+        return result.map { _ in () }
+    }
+
     func bootstrap(subscriptionURL: String) -> AsyncStream<String> {
         AsyncStream { continuation in
             Task {

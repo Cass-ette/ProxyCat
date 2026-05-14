@@ -60,3 +60,12 @@ struct UpdateEvent: Codable {
     let progress: Int?
     let newVersion: String?
 }
+
+struct Profile: Codable, Identifiable {
+    let id: String
+    let name: String
+    let url: String
+    let createdAt: String
+    let updatedAt: String
+    let active: Bool
+}
