@@ -14,6 +14,7 @@ import (
 	"github.com/Cass-ette/ProxyCat/helper/internal/core"
 	"github.com/Cass-ette/ProxyCat/helper/internal/diagnose"
 	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
+	"github.com/Cass-ette/ProxyCat/helper/internal/profile"
 	"github.com/Cass-ette/ProxyCat/helper/internal/redact"
 	"github.com/Cass-ette/ProxyCat/helper/internal/selfupdate"
 	"github.com/Cass-ette/ProxyCat/helper/internal/subscription"
@@ -186,6 +187,25 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		return runSelect(args[1], args[2], stdout, stderr)
 
+	case "profile":
+		if len(args) < 2 {
+			fmt.Fprintf(stderr, "profile subcommand required: list, activate\n")
+			return 2
+		}
+		switch args[1] {
+		case "list":
+			return runProfileList(stdout, stderr, jsonOutput)
+		case "activate":
+			if len(args) < 3 {
+				fmt.Fprintf(stderr, "profile activate requires <id>\n")
+				return 2
+			}
+			return runProfileActivate(args[2], stdout, stderr)
+		default:
+			fmt.Fprintf(stderr, "unknown profile subcommand: %s\n", redact.String(args[1]))
+			return 2
+		}
+
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", redact.String(args[0]))
 		printHelp(stderr)
@@ -343,6 +363,8 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl self-update [--json] [--check-only]")
 	fmt.Fprintln(w, "  proxyctl update [--json] [--check-only]")
 	fmt.Fprintln(w, "  proxyctl select <group> <proxy>")
+	fmt.Fprintln(w, "  proxyctl profile list [--json]")
+	fmt.Fprintln(w, "  proxyctl profile activate <id>")
 }
 
 func runCoreInstall(stdout io.Writer, stderr io.Writer) int {
@@ -925,5 +947,47 @@ func runConfigGenerate(stdout io.Writer, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "Config generated: %s\n", runtimePaths.ConfigYAML)
+	return 0
+}
+
+func runProfileList(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+	profiles, err := profile.LoadAll(runtimePaths.ProfilesDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "load profiles: %v\n", err)
+		return 1
+	}
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(profiles); err != nil {
+			fmt.Fprintf(stderr, "encode profiles: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if len(profiles) == 0 {
+		fmt.Fprintln(stdout, "No profiles")
+		return 0
+	}
+	for _, p := range profiles {
+		fmt.Fprintf(stdout, "%s  %s  (%s)\n", p.ID, p.Name, redact.URL(p.URL))
+	}
+	return 0
+}
+
+func runProfileActivate(profileID string, stdout io.Writer, stderr io.Writer) int {
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+	if err := profile.Activate(runtimePaths.ProfilesDir, profileID, runtimePaths.ConfigYAML); err != nil {
+		fmt.Fprintf(stderr, "activate profile: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Activated profile %s\n", profileID)
 	return 0
 }

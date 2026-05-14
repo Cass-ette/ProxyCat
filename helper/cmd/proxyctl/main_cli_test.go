@@ -412,11 +412,47 @@ func TestHelpCommand(t *testing.T) {
 		"groups",
 		"test",
 		"select",
+		"profile",
 	}
 
 	for _, cmd := range commands {
 		if !strings.Contains(output, cmd) {
 			t.Fatalf("help output missing command %q: %s", cmd, output)
 		}
+	}
+}
+
+func TestProfileListCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"profile", "list", "--json"}, stdout, stderr)
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
+	}
+	output := stdout.String()
+	if output != "[]\n" {
+		t.Fatalf("expected empty JSON array, got: %s", output)
+	}
+}
+
+func TestProfileMissingSubcommand(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"profile"}, stdout, stderr)
+	if exitCode != 2 {
+		t.Fatalf("exitCode = %d, want 2", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "subcommand required") {
+		t.Fatalf("stderr = %s", stderr.String())
+	}
+}
+
+func TestProfileActivateMissingID(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	exitCode := run([]string{"profile", "activate"}, stdout, stderr)
+	if exitCode != 2 {
+		t.Fatalf("exitCode = %d, want 2", exitCode)
 	}
 }
