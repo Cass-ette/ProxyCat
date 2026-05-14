@@ -257,14 +257,26 @@ func appPathFromProxyctlExecutable(executable string) (string, error) {
 
 func runBootstrap(url string, stdout io.Writer, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Saving subscription: %s\n", redact.URL(url))
-	if err := saveSingleSubscription(url); err != nil {
+	profileID, err := saveProfileSubscription(url)
+	if err != nil {
 		fmt.Fprintf(stderr, "save subscription: %v\n", err)
 		return 1
 	}
 
 	fmt.Fprintln(stdout, "Generating config...")
-	if exit := runConfigGenerate(stdout, stderr); exit != 0 {
+	if exit := runConfigGenerateForProfile(profileID, stdout, stderr); exit != 0 {
 		return exit
+	}
+
+	// Activate: copy profile config to active config.yaml
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+	if err := profile.Activate(runtimePaths.ProfilesDir, profileID, runtimePaths.ConfigYAML); err != nil {
+		fmt.Fprintf(stderr, "activate profile: %v\n", err)
+		return 1
 	}
 
 	fmt.Fprintln(stdout, "Ensuring Mihomo core...")
@@ -714,26 +726,45 @@ func runTestJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 	return 0
 }
 
-func saveSingleSubscription(url string) error {
+func saveProfileSubscription(url string) (string, error) {
 	runtimePaths, err := paths.Default()
 	if err != nil {
-		return fmt.Errorf("resolve paths: %w", err)
+		return "", fmt.Errorf("resolve paths: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(runtimePaths.SubscriptionsJSON), 0o755); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
+	if err := os.MkdirAll(runtimePaths.ProfilesDir, 0o755); err != nil {
+		return "", fmt.Errorf("create profiles dir: %w", err)
 	}
-	records, err := subscription.Load(runtimePaths.SubscriptionsJSON)
+
+	profiles, err := profile.LoadAll(runtimePaths.ProfilesDir)
 	if err != nil {
-		return fmt.Errorf("load subscriptions: %w", err)
+		return "", fmt.Errorf("load profiles: %w", err)
 	}
-	for i, r := range records {
-		if r.URL == url {
-			records[i].LastUpdate = time.Now()
-			return subscription.Save(runtimePaths.SubscriptionsJSON, records)
+
+	existing := profile.FindByURL(profiles, url)
+	if existing != nil {
+		existing.UpdatedAt = time.Now()
+		if err := profile.SaveAll(runtimePaths.ProfilesDir, profiles); err != nil {
+			return "", err
 		}
+		return existing.ID, nil
 	}
-	records = []subscription.Record{{URL: url, Name: "Subscription", LastUpdate: time.Now()}}
-	return subscription.Save(runtimePaths.SubscriptionsJSON, records)
+
+	id := profile.NextID(runtimePaths.ProfilesDir)
+	p := profile.Profile{
+		ID:        id,
+		Name:      "Subscription",
+		URL:       url,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if _, err := profile.EnsureProfileDir(runtimePaths.ProfilesDir, id); err != nil {
+		return "", err
+	}
+	profiles = append(profiles, p)
+	if err := profile.SaveAll(runtimePaths.ProfilesDir, profiles); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func runSubscriptionAdd(url string, stdout io.Writer, stderr io.Writer) int {
@@ -947,6 +978,79 @@ func runConfigGenerate(stdout io.Writer, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "Config generated: %s\n", runtimePaths.ConfigYAML)
+	return 0
+}
+
+func runConfigGenerateForProfile(profileID string, stdout io.Writer, stderr io.Writer) int {
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+
+	profiles, err := profile.LoadAll(runtimePaths.ProfilesDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "load profiles: %v\n", err)
+		return 1
+	}
+
+	var target *profile.Profile
+	for i := range profiles {
+		if profiles[i].ID == profileID {
+			target = &profiles[i]
+			break
+		}
+	}
+	if target == nil {
+		fmt.Fprintf(stderr, "profile %s not found\n", profileID)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "Generating config from subscription: %s\n", redact.URL(target.URL))
+
+	client := &http.Client{}
+	probe := subscription.Probe(client, target.URL)
+	if probe.Selected == nil {
+		fmt.Fprintf(stderr, "%s\n", probe.Message)
+		if probe.SuggestedFix != "" {
+			fmt.Fprintf(stderr, "建议：%s\n", probe.SuggestedFix)
+		}
+		return 1
+	}
+	content := probe.SelectedContent
+	fmt.Fprintf(stdout, "Selected subscription format: %s via %s\n", probe.Selected.Format, probe.Selected.UserAgent)
+
+	format := config.Format(probe.Selected.Format)
+	var configYAML string
+	switch format {
+	case config.FormatClashYAML:
+		configYAML, err = config.NormalizeClashYAML(content)
+		if err != nil {
+			fmt.Fprintf(stderr, "normalize YAML: %v\n", err)
+			return 1
+		}
+	case config.FormatBase64List, config.FormatPlainList:
+		configYAML, err = config.ConvertURIToYAML(content, format)
+		if err != nil {
+			fmt.Fprintf(stderr, "convert to YAML: %v\n", err)
+			return 1
+		}
+	default:
+		fmt.Fprintf(stderr, "Unknown subscription format\n")
+		return 1
+	}
+
+	profileConfigPath := profile.ProfileConfigPath(runtimePaths.ProfilesDir, profileID)
+	if err := os.MkdirAll(filepath.Dir(profileConfigPath), 0o755); err != nil {
+		fmt.Fprintf(stderr, "create profile dir: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(profileConfigPath, []byte(configYAML), 0644); err != nil {
+		fmt.Fprintf(stderr, "write profile config: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "Config generated: %s\n", profileConfigPath)
 	return 0
 }
 
