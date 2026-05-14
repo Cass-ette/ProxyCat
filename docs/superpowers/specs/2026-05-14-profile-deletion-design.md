@@ -16,7 +16,7 @@ Add profile deletion to ProxyCat: a `profile delete` CLI command, supporting Swi
 
 ### 1. Profile Package (`helper/internal/profile/profile.go`)
 
-Add `Delete(profilesDir, profileID, activeConfigPath string) error`:
+Add `Delete(profilesDir, profileID string) error`:
 
 1. Load all profiles via `LoadAll`
 2. Find target profile by ID; return error if not found
