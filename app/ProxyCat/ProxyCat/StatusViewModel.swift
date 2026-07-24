@@ -17,6 +17,8 @@ class StatusViewModel: ObservableObject {
     @Published var diagnoseReport: DiagnoseReport?
     @Published var proxyDelays: [String: ProxyDelayResult] = [:]
     @Published var isTestingDelays = false
+    @Published var toggleTestResult: ProxyDelayResult?
+    @Published var isToggleTesting = false
     @Published var bootstrapStatus: String = ""
     @Published var updateStatus: String = ""
     @Published var updateProgress: Int?
@@ -93,10 +95,40 @@ class StatusViewModel: ObservableObject {
     }
 
     func enableSystemProxy() async {
+        isToggleTesting = true
+        toggleTestResult = nil
+        defer { isToggleTesting = false }
+
         let result = await helper.enableSystemProxy()
         if case .failure(let error) = result {
             lastError = "Enable proxy failed: \(error.localizedDescription)"
+            await refreshStatus()
+            return
         }
+
+        // Test the currently selected group (Mihomo tests its selected proxy).
+        // Fall back to the first group's name if currentGroup is empty (e.g. cold start).
+        let target = currentGroup.isEmpty ? (proxyGroups.first?.name ?? "") : currentGroup
+        guard !target.isEmpty else {
+            lastError = "Toggle test skipped: no proxy group available"
+            await refreshStatus()
+            return
+        }
+
+        let delayResult = await helper.proxyDelay(name: target)
+        switch delayResult {
+        case .success(let r):
+            toggleTestResult = r
+            if r.error != nil {
+                // Failure path: auto-diagnose so the user sees which layer failed.
+                await runDiagnose()
+            } else {
+                lastError = nil
+            }
+        case .failure(let error):
+            lastError = "Toggle test failed: \(error.localizedDescription)"
+        }
+
         await refreshStatus()
     }
 
