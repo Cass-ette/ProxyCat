@@ -572,3 +572,30 @@ func TestProfileDeleteCommand(t *testing.T) {
 		t.Fatalf("expected 0 profiles, got %d", len(remaining))
 	}
 }
+
+// TestProxyDelayCommandRecognized mirrors the existing TestGroupsDelayCommandRecognized pattern:
+// we don't care whether Mihomo is reachable, only that routing does not reject the subcommand.
+func TestProxyDelayCommandRecognized(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	exitCode := run([]string{"proxy-delay", "Auto", "--json"}, stdout, stderr)
+
+	if strings.Contains(stderr.String(), "unknown command") {
+		t.Fatalf("proxy-delay should be recognized: %s", stderr.String())
+	}
+	_ = exitCode
+}
+
+func TestProxyDelayMissingNameRejected(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	exitCode := run([]string{"proxy-delay"}, stdout, stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit 2 for missing arg, got %d; stderr=%s", exitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "proxy-delay requires") {
+		t.Fatalf("expected usage error, got: %s", stderr.String())
+	}
+}

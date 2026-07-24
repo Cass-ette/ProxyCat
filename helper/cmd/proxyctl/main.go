@@ -172,6 +172,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 2
 		}
 
+	case "proxy-delay":
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "proxy-delay requires <proxy-or-group-name>")
+			return 2
+		}
+		return runProxyDelay(args[1], stdout, stderr, jsonOutput)
+
 	case "test":
 		return runTestJSON(stdout, stderr, jsonOutput)
 
@@ -378,6 +385,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl groups [list]")
 	fmt.Fprintln(w, "  proxyctl groups delay [--json]")
 	fmt.Fprintln(w, "  proxyctl groups select <group> <proxy>")
+	fmt.Fprintln(w, "  proxyctl proxy-delay <name> [--json]")
 	fmt.Fprintln(w, "  proxyctl test")
 	fmt.Fprintln(w, "  proxyctl self-update [--json] [--check-only]")
 	fmt.Fprintln(w, "  proxyctl update [--json] [--check-only]")
@@ -676,6 +684,36 @@ func isDelaySkippedProxy(name string, groupNames map[string]bool) bool {
 		return true
 	}
 	return groupNames[name]
+}
+
+func runProxyDelay(name string, stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
+	client := controller.NewClient("")
+	const testURL = "http://www.gstatic.com/generate_204"
+	const timeoutMS = 5000
+	delay, err := client.TestProxyDelay(name, testURL, timeoutMS)
+	if err != nil {
+		result := proxyDelayResult{Error: err.Error()}
+		if jsonOutput {
+			if encErr := json.NewEncoder(stdout).Encode(result); encErr != nil {
+				fmt.Fprintf(stderr, "encode proxy delay: %v\n", encErr)
+				return 1
+			}
+			// Report the failure in-band rather than via exit code so the Swift UI sees the error string.
+			return 0
+		}
+		fmt.Fprintf(stderr, "test delay for %s: %v\n", name, err)
+		return 1
+	}
+	result := proxyDelayResult{Delay: delay}
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			fmt.Fprintf(stderr, "encode proxy delay: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintf(stdout, "%s: %dms\n", name, delay)
+	return 0
 }
 
 func runGroupsSelect(group string, proxy string, stdout io.Writer, stderr io.Writer) int {
