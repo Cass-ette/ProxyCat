@@ -218,6 +218,32 @@ struct MenuContentView: View {
             StatusRow(label: "系统代理", value: viewModel.systemProxyEnabled ? "已开启" : "已关闭")
             StatusRow(label: "代理模式", value: modeLabel(viewModel.currentMode))
             StatusRow(label: "当前节点", value: viewModel.currentNode.isEmpty ? "-" : viewModel.currentNode)
+
+            if viewModel.systemProxyEnabled {
+                HStack {
+                    Text("连接测试:")
+                        .foregroundColor(.secondary)
+                    if viewModel.isToggleTesting {
+                        HStack(spacing: 6) {
+                            ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
+                            Text("测延迟中...").fontWeight(.medium)
+                        }
+                    } else if let r = viewModel.toggleTestResult {
+                        Text(toggleTestLabel(r))
+                            .fontWeight(.medium)
+                            .foregroundColor(toggleTestColor(r))
+                    } else {
+                        Text("-").foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .font(.system(size: 13))
+
+                if let r = viewModel.toggleTestResult, r.error != nil {
+                    toggleFailureBanner
+                }
+            }
         }
         .padding(.bottom, 8)
     }
@@ -505,6 +531,42 @@ struct MenuContentView: View {
         default:
             return .secondary
         }
+    }
+
+    private var toggleFailureBanner: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("开启系统代理后无法连通 — 订阅或节点可能有问题。")
+                .font(.system(size: 12))
+                .foregroundColor(.red)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: {
+                Task { await viewModel.runDiagnose() }
+            }) {
+                HStack {
+                    Image(systemName: "stethoscope").frame(width: 16)
+                    Text("运行诊断").font(.system(size: 12, weight: .medium))
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.red.opacity(0.12))
+                .cornerRadius(6)
+            }
+            .buttonStyle(PlainButtonStyle())
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func toggleTestLabel(_ r: ProxyDelayResult) -> String {
+        if let err = r.error, !err.isEmpty { return "✕ \(err)" }
+        return "\(r.delay)ms"
+    }
+
+    private func toggleTestColor(_ r: ProxyDelayResult) -> Color {
+        if r.error != nil { return .red }
+        if r.delay <= 100 { return .green }
+        if r.delay <= 250 { return .orange }
+        return .red
     }
 
     private var actionsSection: some View {
