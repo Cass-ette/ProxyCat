@@ -111,7 +111,7 @@ class MenuBarController: NSObject, NSWindowDelegate {
         } else {
             button.image = nil
         }
-        button.title = " ProxyCat"
+        button.title = ""
         button.toolTip = accessibilityDescription
     }
 }
