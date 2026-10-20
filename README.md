@@ -12,6 +12,7 @@ A diagnostic-first macOS menu bar app for managing Mihomo/Clash subscriptions wi
 - **Transparent**: Shows real macOS system proxy state, not cached guesses
 - **Diagnostic**: One-click diagnosis identifies which layer failed and suggests fixes
 - **Safe**: Redacts subscription tokens and node credentials from logs and UI
+- **Clean shutdown**: Turns off system proxies before stopping Mihomo on quit, logout, shutdown, or restart
 
 ## Screenshots
 

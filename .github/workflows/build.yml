@@ -62,6 +62,9 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO
 
+      - name: Test shutdown cleanup
+        run: bash scripts/test-shutdown.sh
+
       - name: Verify app bundle
         run: |
           ls -la app/ProxyCat/build/Build/Products/Release/ProxyCat.app

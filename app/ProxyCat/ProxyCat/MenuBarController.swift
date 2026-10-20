@@ -18,6 +18,14 @@ class MenuBarController: NSObject, NSWindowDelegate {
         viewModel.startAutoRefresh()
     }
 
+    func startAutoRefresh() {
+        viewModel.startAutoRefresh()
+    }
+
+    func stopAutoRefresh() {
+        viewModel.stopAutoRefresh()
+    }
+
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

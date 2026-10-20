@@ -329,10 +329,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func restartApp() {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/bash")
-        task.arguments = ["-c", "sleep 0.5; open \"\(Bundle.main.bundlePath)\""]
-        try? task.run()
+        AppDelegate.relaunchOnExit = true
         NSApplication.shared.terminate(nil)
     }
 

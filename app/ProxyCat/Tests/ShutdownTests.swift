@@ -1,0 +1,139 @@
+import Foundation
+
+private struct TestFailure: Error, CustomStringConvertible {
+    let description: String
+}
+
+private func expect(_ condition: Bool, _ message: String) throws {
+    if !condition { throw TestFailure(description: message) }
+}
+
+private final class Fixture {
+    let directory: URL
+    let helper: HelperClient
+
+    init() throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("proxyctl")
+        try #"""
+        #!/bin/sh
+        fixture_dir=${0%/*}
+        log="$fixture_dir/commands.log"
+        case "$1 $2" in
+            'system-proxy on')
+                echo 'enable started' >> "$log"
+                if [ -f "$fixture_dir/slow-enable" ]; then sleep 0.3; fi
+                echo 'enable finished' >> "$log"
+                ;;
+            'system-proxy off')
+                echo 'system-proxy off' >> "$log"
+                if [ -f "$fixture_dir/slow-disable" ]; then sleep 0.2; fi
+                if [ -f "$fixture_dir/fail-disable" ]; then exit 9; fi
+                ;;
+            'core stop')
+                echo 'core stop' >> "$log"
+                if [ -f "$fixture_dir/fail-stop" ]; then exit 8; fi
+                ;;
+            bootstrap*)
+                trap 'echo "bootstrap stopped" >> "$log"; exit 0' TERM
+                echo 'bootstrap started' >> "$log"
+                while :; do sleep 0.02; done
+                ;;
+            *) echo "$*" >> "$log" ;;
+        esac
+        """#.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        helper = HelperClient(proxyctlPath: executable.path)
+    }
+
+    deinit { try? FileManager.default.removeItem(at: directory) }
+
+    var commands: [String] {
+        let text = (try? String(contentsOf: directory.appendingPathComponent("commands.log"), encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").map(String.init)
+    }
+
+    func flag(_ name: String) throws {
+        try Data().write(to: directory.appendingPathComponent(name))
+    }
+
+    func waitFor(_ command: String) async throws {
+        for _ in 0..<500 {
+            if commands.contains(command) { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        throw TestFailure(description: "Timed out waiting for \(command): \(commands)")
+    }
+}
+
+@main
+struct ShutdownTests {
+    static func main() async throws {
+        try await cleanupIsOrderedAndShared()
+        try await waitsForEnableAndRejectsNewActions()
+        try await failureKeepsCoreAndAllowsRetry()
+        try await coreStopFailureDoesNotLeaveProxyEnabled()
+        try await bootstrapStopsBeforeCleanup()
+        print("Passed 5 shutdown regression tests")
+    }
+
+    static func cleanupIsOrderedAndShared() async throws {
+        let fixture = try Fixture()
+        async let first = fixture.helper.shutdown()
+        async let second = fixture.helper.shutdown()
+        try await first.get()
+        try await second.get()
+        try await fixture.helper.shutdown().get()
+        try expect(fixture.commands == ["system-proxy off", "core stop"], "Cleanup must run once, proxy first")
+    }
+
+    static func waitsForEnableAndRejectsNewActions() async throws {
+        let fixture = try Fixture()
+        try fixture.flag("slow-enable")
+        try fixture.flag("slow-disable")
+        let enable = Task { await fixture.helper.enableSystemProxy() }
+        try await fixture.waitFor("enable started")
+        let shutdown = Task { await fixture.helper.shutdown() }
+        try await fixture.waitFor("system-proxy off")
+        let rejected = await fixture.helper.enableSystemProxy()
+        guard case .failure(.shuttingDown) = rejected else {
+            throw TestFailure(description: "New proxy changes must be rejected during cleanup")
+        }
+        try await enable.value.get()
+        try await shutdown.value.get()
+        try expect(fixture.commands == ["enable started", "enable finished", "system-proxy off", "core stop"],
+                   "In-flight enable must finish before cleanup: \(fixture.commands)")
+    }
+
+    static func failureKeepsCoreAndAllowsRetry() async throws {
+        let fixture = try Fixture()
+        try fixture.flag("fail-disable")
+        let result = await fixture.helper.shutdown()
+        guard case .failure = result else {
+            throw TestFailure(description: "A nonzero exit without stderr must fail cleanup")
+        }
+        try expect(fixture.commands == ["system-proxy off"], "Core must remain available if disabling proxy fails")
+        await fixture.helper.resumeAfterCancelledShutdown()
+        try FileManager.default.removeItem(at: fixture.directory.appendingPathComponent("fail-disable"))
+        try await fixture.helper.shutdown().get()
+        try expect(fixture.commands == ["system-proxy off", "system-proxy off", "core stop"], "Retry must clean up")
+    }
+
+    static func coreStopFailureDoesNotLeaveProxyEnabled() async throws {
+        let fixture = try Fixture()
+        try fixture.flag("fail-stop")
+        try await fixture.helper.shutdown().get()
+        try expect(fixture.commands == ["system-proxy off", "core stop"], "Proxy must be off even when core stop fails")
+    }
+
+    static func bootstrapStopsBeforeCleanup() async throws {
+        let fixture = try Fixture()
+        let stream = await fixture.helper.bootstrap(subscriptionURL: "https://example.invalid/test")
+        try await fixture.waitFor("bootstrap started")
+        try await fixture.helper.shutdown().get()
+        for await _ in stream {}
+        try expect(fixture.commands == ["bootstrap started", "bootstrap stopped", "system-proxy off", "core stop"],
+                   "Bootstrap must stop before clearing settings: \(fixture.commands)")
+    }
+}

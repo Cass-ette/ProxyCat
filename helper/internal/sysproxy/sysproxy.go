@@ -3,13 +3,20 @@ package sysproxy
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
+
+const proxyChangeTimeout = 15 * time.Second
 
 // Status represents the current system proxy configuration.
 type Status struct {
@@ -30,7 +37,14 @@ func Enable(port int) error {
 		return fmt.Errorf("system proxy control is only supported on macOS")
 	}
 
-	services, err := getNetworkServices()
+	// Cancelling bootstrap must also stop its current networksetup child before
+	// the app clears proxy settings during shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, proxyChangeTimeout)
+	defer cancel()
+
+	services, err := getNetworkServices(ctx, false)
 	if err != nil {
 		return fmt.Errorf("get network services: %w", err)
 	}
@@ -40,15 +54,15 @@ func Enable(port int) error {
 
 	for _, svc := range services {
 		// Set HTTP proxy
-		if err := exec.Command("networksetup", "-setwebproxy", svc, host, portStr).Run(); err != nil {
+		if err := runNetworksetup(ctx, "-setwebproxy", svc, host, portStr); err != nil {
 			return fmt.Errorf("set http proxy for %s: %w", svc, err)
 		}
 		// Set HTTPS proxy
-		if err := exec.Command("networksetup", "-setsecurewebproxy", svc, host, portStr).Run(); err != nil {
+		if err := runNetworksetup(ctx, "-setsecurewebproxy", svc, host, portStr); err != nil {
 			return fmt.Errorf("set https proxy for %s: %w", svc, err)
 		}
 		// Set SOCKS proxy
-		if err := exec.Command("networksetup", "-setsocksfirewallproxy", svc, host, portStr).Run(); err != nil {
+		if err := runNetworksetup(ctx, "-setsocksfirewallproxy", svc, host, portStr); err != nil {
 			return fmt.Errorf("set socks proxy for %s: %w", svc, err)
 		}
 	}
@@ -62,23 +76,48 @@ func Disable() error {
 		return fmt.Errorf("system proxy control is only supported on macOS")
 	}
 
-	services, err := getNetworkServices()
+	ctx, cancel := context.WithTimeout(context.Background(), proxyChangeTimeout)
+	defer cancel()
+	return disable(ctx)
+}
+
+func disable(ctx context.Context) error {
+	// Disabled services can still retain proxy settings from an earlier session.
+	services, err := getNetworkServices(ctx, true)
 	if err != nil {
 		return fmt.Errorf("get network services: %w", err)
 	}
 
+	var failures []error
 	for _, svc := range services {
-		if err := exec.Command("networksetup", "-setwebproxystate", svc, "off").Run(); err != nil {
-			return fmt.Errorf("disable http proxy for %s: %w", svc, err)
-		}
-		if err := exec.Command("networksetup", "-setsecurewebproxystate", svc, "off").Run(); err != nil {
-			return fmt.Errorf("disable https proxy for %s: %w", svc, err)
-		}
-		if err := exec.Command("networksetup", "-setsocksfirewallproxystate", svc, "off").Run(); err != nil {
-			return fmt.Errorf("disable socks proxy for %s: %w", svc, err)
+		for _, setting := range []struct{ flag, name string }{
+			{"-setwebproxystate", "http"},
+			{"-setsecurewebproxystate", "https"},
+			{"-setsocksfirewallproxystate", "socks"},
+		} {
+			if err := ctx.Err(); err != nil {
+				return errors.Join(append(failures, err)...)
+			}
+			if err := runNetworksetup(ctx, setting.flag, svc, "off"); err != nil {
+				// A failure on one service must not leave every other service enabled.
+				failures = append(failures, fmt.Errorf("disable %s proxy for %s: %w", setting.name, svc, err))
+			}
 		}
 	}
 
+	return errors.Join(failures...)
+}
+
+func runNetworksetup(ctx context.Context, args ...string) error {
+	output, err := exec.CommandContext(ctx, "networksetup", args...).CombinedOutput()
+	message := strings.TrimSpace(string(output))
+	if err != nil {
+		return fmt.Errorf("%w: %s", errors.Join(err, ctx.Err()), message)
+	}
+	// networksetup can report configuration errors with a zero exit status.
+	if strings.Contains(message, "Error:") {
+		return errors.New(message)
+	}
 	return nil
 }
 
@@ -97,10 +136,10 @@ func GetStatus() (*Status, error) {
 }
 
 // getNetworkServices returns a list of network service names.
-func getNetworkServices() ([]string, error) {
-	output, err := exec.Command("networksetup", "-listallnetworkservices").Output()
+func getNetworkServices(ctx context.Context, includeDisabled bool) ([]string, error) {
+	output, err := exec.CommandContext(ctx, "networksetup", "-listallnetworkservices").Output()
 	if err != nil {
-		return nil, fmt.Errorf("list network services: %w", err)
+		return nil, fmt.Errorf("list network services: %w", errors.Join(err, ctx.Err()))
 	}
 
 	var services []string
@@ -111,7 +150,13 @@ func getNetworkServices() ([]string, error) {
 			continue
 		}
 		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "*") {
+		if strings.HasPrefix(line, "*") {
+			if !includeDisabled {
+				continue
+			}
+			line = strings.TrimSpace(strings.TrimPrefix(line, "*"))
+		}
+		if line != "" {
 			services = append(services, line)
 		}
 	}

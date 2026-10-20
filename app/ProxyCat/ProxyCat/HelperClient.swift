@@ -2,6 +2,7 @@ import Foundation
 import os.log
 
 enum HelperError: Error, LocalizedError {
+    case shuttingDown
     case executableNotFound
     case executionFailed(String)
     case invalidOutput
@@ -9,6 +10,8 @@ enum HelperError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .shuttingDown:
+            return "ProxyCat is shutting down"
         case .executableNotFound:
             return "proxyctl not found in bundle or PATH"
         case .executionFailed(let message):
@@ -26,6 +29,13 @@ actor HelperClient {
 
     private var proxyctlPath: String?
     private var updateProcess: Process?
+    private var bootstrapProcess: Process?
+    private var lifecycleCommands: [UUID: Task<Result<Data, HelperError>, Never>] = [:]
+    private var shutdownTask: Task<Result<Void, HelperError>, Never>?
+
+    init(proxyctlPath: String? = nil) {
+        self.proxyctlPath = proxyctlPath
+    }
 
     private func getProxyctlPath() -> String? {
         if let path = proxyctlPath { return path }
@@ -55,42 +65,93 @@ actor HelperClient {
         return nil
     }
 
-    private func runCommand(_ args: [String]) async -> Result<Data, HelperError> {
+    private func runCommand(_ args: [String], duringShutdown: Bool = false) async -> Result<Data, HelperError> {
+        guard shutdownTask == nil || duringShutdown else {
+            return .failure(.shuttingDown)
+        }
         guard let executable = getProxyctlPath() else {
             return .failure(.executableNotFound)
         }
 
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global().async {
-                let task = Process()
-                task.executableURL = URL(fileURLWithPath: executable)
-                task.arguments = args
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = args
 
-                let outputPipe = Pipe()
-                let errorPipe = Pipe()
-                task.standardOutput = outputPipe
-                task.standardError = errorPipe
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
 
-                do {
-                    try task.run()
-                    task.waitUntilExit()
-
-                    let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-
-                    if task.terminationStatus != 0,
-                       let stderr = String(data: errorData, encoding: .utf8),
-                       !stderr.isEmpty {
-                        continuation.resume(returning: .failure(.executionFailed(stderr)))
-                        return
-                    }
-
-                    continuation.resume(returning: .success(data))
-                } catch {
-                    continuation.resume(returning: .failure(.executionFailed(error.localizedDescription)))
-                }
-            }
+        // Launch and register on the actor so shutdown cannot miss an in-flight change.
+        do {
+            try process.run()
+        } catch {
+            return .failure(.executionFailed(error.localizedDescription))
         }
+
+        let command = Task.detached { () -> Result<Data, HelperError> in
+            // Drain both pipes while the process runs, including large diagnostics.
+            async let errorData = Self.readToEnd(errorPipe.fileHandleForReading)
+            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderr = String(decoding: await errorData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else {
+                let message = stderr.isEmpty ? "proxyctl exited with status \(process.terminationStatus)" : stderr
+                return .failure(.executionFailed(message))
+            }
+            return .success(data)
+        }
+
+        let id = UUID()
+        if ["core", "system-proxy"].contains(args.first ?? ""), args.dropFirst().first != "status" {
+            lifecycleCommands[id] = command
+        }
+        defer { lifecycleCommands[id] = nil }
+        return await command.value
+    }
+
+    private static func readToEnd(_ handle: FileHandle) async -> Data {
+        handle.readDataToEndOfFile()
+    }
+
+    func shutdown() async -> Result<Void, HelperError> {
+        if let shutdownTask = shutdownTask {
+            return await shutdownTask.value
+        }
+
+        let pendingCommands = Array(lifecycleCommands.values)
+        let bootstrap = bootstrapProcess
+        let task = Task { () -> Result<Void, HelperError> in
+            // Bootstrap can enable proxies itself. Stop it before clearing settings.
+            if let bootstrap = bootstrap, bootstrap.isRunning {
+                bootstrap.terminate()
+                await Task.detached { bootstrap.waitUntilExit() }.value
+            }
+            for command in pendingCommands {
+                _ = await command.value
+            }
+
+            let disabled = await runCommand(["system-proxy", "off"], duringShutdown: true)
+            if case .failure(let error) = disabled {
+                // Keep the core available if macOS refused to clear its proxy settings.
+                return .failure(error)
+            }
+
+            let stopped = await runCommand(["core", "stop"], duringShutdown: true)
+            if case .failure(let error) = stopped {
+                os_log("shutdown: could not stop core: %{public}@", error.localizedDescription)
+            }
+            return .success(())
+        }
+        // This also blocks UI actions and stream tasks that have not launched yet.
+        shutdownTask = task
+        return await task.value
+    }
+
+    func resumeAfterCancelledShutdown() {
+        shutdownTask = nil
     }
 
     func getCoreStatus() async -> Result<CoreStatus, HelperError> {
@@ -187,6 +248,10 @@ actor HelperClient {
     func installUpdate() -> AsyncStream<UpdateEvent> {
         AsyncStream { continuation in
             Task {
+                guard shutdownTask == nil else {
+                    continuation.finish()
+                    return
+                }
                 guard let executable = getProxyctlPath() else {
                     continuation.yield(UpdateEvent(stage: "error", message: "proxyctl not found", progress: nil, newVersion: nil))
                     continuation.finish()
@@ -362,6 +427,10 @@ actor HelperClient {
     func bootstrap(subscriptionURL: String) -> AsyncStream<String> {
         AsyncStream { continuation in
             Task {
+                guard shutdownTask == nil else {
+                    continuation.finish()
+                    return
+                }
                 guard let executable = getProxyctlPath() else {
                     continuation.yield("proxyctl not found")
                     continuation.finish()
@@ -401,6 +470,7 @@ actor HelperClient {
 
                 do {
                     try task.run()
+                    bootstrapProcess = task
                 } catch {
                     continuation.yield("Failed to run: \(error.localizedDescription)")
                     continuation.finish()
