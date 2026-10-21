@@ -4,6 +4,7 @@ struct MenuContentView: View {
     @ObservedObject var viewModel: StatusViewModel
     @State private var subscriptionURL: String = ""
     @State private var isBootstrapping: Bool = false
+    @State private var campusSSIDInput = ""
     @AppStorage("nodesExpanded") private var nodesExpanded: Bool = true
 
     var body: some View {
@@ -26,6 +27,10 @@ struct MenuContentView: View {
 
                 // Status section
                 statusSection
+
+                Divider()
+
+                campusNetworkSection
 
                 Divider()
 
@@ -295,6 +300,124 @@ struct MenuContentView: View {
                     .frame(maxHeight: 320)
                     .transition(.opacity)
                 }
+            }
+        }
+        .padding(.bottom, 8)
+    }
+
+    private var campusNetworkSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("校园网保护")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+            Toggle("连接校园网时保护", isOn: $viewModel.campusProtectionEnabled)
+                .font(.system(size: 12))
+                .toggleStyle(SwitchToggleStyle())
+                .padding(.horizontal, 16)
+
+            StatusRow(
+                label: "当前 Wi-Fi",
+                value: viewModel.currentWiFiSSID ?? "未连接或无权读取"
+            )
+
+            Button(action: viewModel.addCurrentWiFiToCampusNetworks) {
+                HStack {
+                    Image(systemName: "plus.circle")
+                        .frame(width: 20)
+                    Text("将当前 Wi-Fi 标记为校园网")
+                    Spacer()
+                }
+                .font(.system(size: 12))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PlainButtonStyle())
+            .padding(.horizontal, 16)
+            .disabled(viewModel.currentWiFiSSID == nil || viewModel.protectedWiFiSSIDs.contains(viewModel.currentWiFiSSID ?? ""))
+
+            HStack(spacing: 6) {
+                TextField("手动输入校园网 SSID", text: $campusSSIDInput)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .disableAutocorrection(true)
+                Button(action: {
+                    viewModel.addCampusNetwork(campusSSIDInput)
+                    campusSSIDInput = ""
+                }) {
+                    Image(systemName: "plus")
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .disabled(campusSSIDInput.isEmpty)
+                .help("添加校园网 SSID")
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 16)
+
+            if !viewModel.protectedWiFiSSIDs.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(viewModel.protectedWiFiSSIDs, id: \.self) { ssid in
+                        HStack(spacing: 6) {
+                            Text(ssid)
+                                .font(.system(size: 11))
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Button(action: { viewModel.removeCampusNetwork(ssid) }) {
+                                Image(systemName: "xmark.circle")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .help("移除校园网")
+                        }
+                        .padding(.horizontal, 16)
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text("匹配时")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                Picker("校园网处理方式", selection: $viewModel.campusNetworkAction) {
+                    ForEach(CampusNetworkAction.allCases) { action in
+                        Text(action.title).tag(action)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(SegmentedPickerStyle())
+            }
+            .padding(.horizontal, 16)
+            .disabled(!viewModel.campusProtectionEnabled)
+
+            if let notice = viewModel.campusProtectionNotice {
+                Text(notice)
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+            }
+
+            if viewModel.currentWiFiSSID == nil {
+                if viewModel.campusProtectionEnabled && !viewModel.protectedWiFiSSIDs.isEmpty {
+                    Text("无法识别当前 Wi-Fi，校园网保护尚未生效。")
+                        .font(.system(size: 11))
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 16)
+                }
+                Button(action: viewModel.requestWiFiAccess) {
+                    HStack {
+                        Image(systemName: "location.circle")
+                            .frame(width: 20)
+                        Text("允许读取 Wi-Fi 名称")
+                        Spacer()
+                    }
+                    .font(.system(size: 11))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PlainButtonStyle())
+                .padding(.horizontal, 16)
             }
         }
         .padding(.bottom, 8)

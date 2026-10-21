@@ -13,6 +13,7 @@ A diagnostic-first macOS menu bar app for managing Mihomo/Clash subscriptions wi
 - **Diagnostic**: One-click diagnosis identifies which layer failed and suggests fixes
 - **Safe**: Redacts subscription tokens and node credentials from logs and UI
 - **Clean shutdown**: Turns off system proxies before stopping Mihomo on quit, logout, shutdown, or restart
+- **Campus Wi-Fi protection**: Matches saved SSIDs and either prompts or disconnects ProxyCat, without automatically reconnecting afterward
 
 ## Screenshots
 
@@ -21,6 +22,18 @@ The menu bar app shows:
 - Core status and system proxy state
 - Quick actions: toggle proxy, update subscription, test connection, restart core
 - Diagnostics and logs access
+
+## Campus Wi-Fi Protection
+
+Open **校园网保护** in the menu, allow Wi-Fi name access when prompted, and add the current Wi-Fi or enter its SSID manually. SSIDs are matched exactly, including case and spaces, and the list and policy are saved locally.
+
+- **提示** (default): Warns once when ProxyCat is active on a saved campus Wi-Fi, with an option to disconnect.
+- **自动断开**: Disables system proxies before stopping Mihomo, cancels in-progress bootstrap, and blocks starting ProxyCat on that Wi-Fi.
+- Wi-Fi is checked during the five-second status refresh. Switching networks can therefore take a refresh cycle to detect; this is not a guarantee that no proxy traffic occurs during the transition.
+- Leaving campus Wi-Fi does not restore the proxy. Reconnect manually when appropriate.
+- Detection requires access to the Wi-Fi name. If it is unavailable, the menu shows that protection is inactive. Wired campus connections and VPNs managed by other applications are not controlled by this feature.
+
+Run the macOS policy and lifecycle regressions with `bash scripts/test-campus-network.sh` and `bash scripts/test-shutdown.sh`. The tests use isolated fake helpers and do not change the machine's network configuration.
 
 ## Building
 

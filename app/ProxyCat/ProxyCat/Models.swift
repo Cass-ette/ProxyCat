@@ -1,5 +1,21 @@
 import Foundation
 
+enum CampusNetworkAction: String, CaseIterable, Identifiable {
+    case prompt
+    case disconnect
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .prompt:
+            return "提示"
+        case .disconnect:
+            return "自动断开"
+        }
+    }
+}
+
 struct CoreStatus: Codable {
     let running: Bool
     let pid: Int

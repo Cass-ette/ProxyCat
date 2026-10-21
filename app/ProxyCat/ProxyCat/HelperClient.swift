@@ -3,6 +3,7 @@ import os.log
 
 enum HelperError: Error, LocalizedError {
     case shuttingDown
+    case campusDisconnectInProgress
     case executableNotFound
     case executionFailed(String)
     case invalidOutput
@@ -12,6 +13,8 @@ enum HelperError: Error, LocalizedError {
         switch self {
         case .shuttingDown:
             return "ProxyCat is shutting down"
+        case .campusDisconnectInProgress:
+            return "校园网保护正在关闭 ProxyCat 代理"
         case .executableNotFound:
             return "proxyctl not found in bundle or PATH"
         case .executionFailed(let message):
@@ -32,6 +35,7 @@ actor HelperClient {
     private var bootstrapProcess: Process?
     private var lifecycleCommands: [UUID: Task<Result<Data, HelperError>, Never>] = [:]
     private var shutdownTask: Task<Result<Void, HelperError>, Never>?
+    private var campusDisconnectTask: Task<Result<Void, HelperError>, Never>?
 
     init(proxyctlPath: String? = nil) {
         self.proxyctlPath = proxyctlPath
@@ -65,9 +69,12 @@ actor HelperClient {
         return nil
     }
 
-    private func runCommand(_ args: [String], duringShutdown: Bool = false) async -> Result<Data, HelperError> {
+    private func runCommand(_ args: [String], duringShutdown: Bool = false, duringCampusDisconnect: Bool = false) async -> Result<Data, HelperError> {
         guard shutdownTask == nil || duringShutdown else {
             return .failure(.shuttingDown)
+        }
+        guard campusDisconnectTask == nil || duringCampusDisconnect || duringShutdown else {
+            return .failure(.campusDisconnectInProgress)
         }
         guard let executable = getProxyctlPath() else {
             return .failure(.executableNotFound)
@@ -151,7 +158,11 @@ actor HelperClient {
 
         let pendingCommands = Array(lifecycleCommands.values)
         let bootstrap = bootstrapProcess
+        let campusDisconnect = campusDisconnectTask
         let task = Task { () -> Result<Void, HelperError> in
+            if let campusDisconnect = campusDisconnect {
+                _ = await campusDisconnect.value
+            }
             // Bootstrap can enable proxies itself. Stop it before clearing settings.
             if let bootstrap = bootstrap, bootstrap.isRunning {
                 bootstrap.terminate()
@@ -180,6 +191,31 @@ actor HelperClient {
 
     func resumeAfterCancelledShutdown() {
         shutdownTask = nil
+    }
+
+    func disconnectForCampusNetwork() async -> Result<Void, HelperError> {
+        guard shutdownTask == nil else { return .failure(.shuttingDown) }
+        if let task = campusDisconnectTask { return await task.value }
+
+        let pendingCommands = Array(lifecycleCommands.values)
+        let bootstrap = bootstrapProcess
+        let task = Task { () -> Result<Void, HelperError> in
+            // Bootstrap may enable the proxy itself, so cancel it before cleanup.
+            if let bootstrap = bootstrap, bootstrap.isRunning {
+                bootstrap.terminate()
+                await Task.detached { bootstrap.waitUntilExit() }.value
+            }
+            for command in pendingCommands {
+                _ = await command.value
+            }
+            let disabled = await runCommand(["system-proxy", "off"], duringCampusDisconnect: true)
+            if case .failure(let error) = disabled { return .failure(error) }
+            let stopped = await runCommand(["core", "stop"], duringCampusDisconnect: true)
+            return stopped.map { _ in () }
+        }
+        campusDisconnectTask = task
+        defer { campusDisconnectTask = nil }
+        return await task.value
     }
 
     func getCoreStatus() async -> Result<CoreStatus, HelperError> {
@@ -455,7 +491,7 @@ actor HelperClient {
     func bootstrap(subscriptionURL: String) -> AsyncStream<String> {
         AsyncStream { continuation in
             Task {
-                guard shutdownTask == nil else {
+                guard shutdownTask == nil, campusDisconnectTask == nil else {
                     continuation.finish()
                     return
                 }

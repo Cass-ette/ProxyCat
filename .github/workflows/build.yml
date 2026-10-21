@@ -65,6 +65,9 @@ jobs:
       - name: Test shutdown cleanup
         run: bash scripts/test-shutdown.sh
 
+      - name: Test campus network protection
+        run: bash scripts/test-campus-network.sh
+
       - name: Verify app bundle
         run: |
           ls -la app/ProxyCat/build/Build/Products/Release/ProxyCat.app

@@ -1,6 +1,8 @@
 import SwiftUI
 import Combine
 import AppKit
+import CoreWLAN
+import CoreLocation
 
 @MainActor
 class StatusViewModel: ObservableObject {
@@ -20,6 +22,7 @@ class StatusViewModel: ObservableObject {
     @Published var toggleTestResult: ProxyDelayResult?
     @Published var isToggleTesting = false
     @Published var bootstrapStatus: String = ""
+    @Published private(set) var isBootstrapping = false
     @Published var updateStatus: String = ""
     @Published var updateProgress: Int?
     @Published var availableUpdateVersion: String?
@@ -29,9 +32,64 @@ class StatusViewModel: ObservableObject {
     @Published var profiles: [Profile] = []
     @Published var activeProfileID: String?
     @Published var updateFailed = false
+    @Published var currentWiFiSSID: String?
+    @Published var campusProtectionNotice: String?
+    @Published var protectedWiFiSSIDs: [String] {
+        didSet {
+            defaults.set(protectedWiFiSSIDs, forKey: "protectedWiFiSSIDs")
+            campusSettingsChanged()
+        }
+    }
+    @Published var campusProtectionEnabled: Bool {
+        didSet {
+            defaults.set(campusProtectionEnabled, forKey: "campusProtectionEnabled")
+            campusSettingsChanged()
+        }
+    }
+    @Published var campusNetworkAction: CampusNetworkAction {
+        didSet {
+            defaults.set(campusNetworkAction.rawValue, forKey: "campusNetworkAction")
+            campusSettingsChanged()
+        }
+    }
 
-    private let helper = HelperClient.shared
+    private let helper: HelperClient
+    private let defaults: UserDefaults
+    private let wifiSSIDProvider: () -> String?
+    private let campusPrompt: (String) -> Bool
     private var refreshTimer: Timer?
+    private var campusActionInProgress = false
+    private var lastCampusPromptSSID: String?
+    private lazy var locationDelegate = WiFiLocationDelegate { [weak self] in
+        Task { @MainActor [weak self] in await self?.refreshStatus() }
+    }
+    private lazy var locationManager: CLLocationManager = {
+        let manager = CLLocationManager()
+        manager.delegate = locationDelegate
+        return manager
+    }()
+
+    init(helper: HelperClient = .shared, defaults: UserDefaults = .standard,
+         wifiSSIDProvider: @escaping () -> String? = {
+             CWWiFiClient.shared().interfaces()?.compactMap { $0.ssid() }.first
+         }, campusPrompt: ((String) -> Bool)? = nil) {
+        self.helper = helper
+        self.defaults = defaults
+        self.wifiSSIDProvider = wifiSSIDProvider
+        self.campusPrompt = campusPrompt ?? { ssid in
+            let alert = NSAlert()
+            alert.messageText = "检测到校园网 Wi-Fi"
+            alert.informativeText = "当前网络「\(ssid)」已标记为校园网，ProxyCat 代理仍在运行。是否关闭系统代理并停止代理引擎？"
+            alert.addButton(withTitle: "关闭代理")
+            alert.addButton(withTitle: "暂时保持")
+            alert.alertStyle = .warning
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            return alert.runModal() == .alertFirstButtonReturn
+        }
+        protectedWiFiSSIDs = defaults.stringArray(forKey: "protectedWiFiSSIDs") ?? []
+        campusProtectionEnabled = defaults.object(forKey: "campusProtectionEnabled") as? Bool ?? true
+        campusNetworkAction = CampusNetworkAction(rawValue: defaults.string(forKey: "campusNetworkAction") ?? "prompt") ?? .prompt
+    }
 
     func startAutoRefresh(interval: TimeInterval = 5.0) {
         refreshTimer?.invalidate()
@@ -47,8 +105,11 @@ class StatusViewModel: ObservableObject {
     }
 
     func refreshStatus() async {
+        guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+
+        currentWiFiSSID = wifiSSIDProvider()
 
         // Core status
         let coreResult = await helper.getCoreStatus()
@@ -64,10 +125,12 @@ class StatusViewModel: ObservableObject {
         let proxyResult = await helper.getSystemProxyStatus()
         switch proxyResult {
         case .success(let status):
-            systemProxyEnabled = status.socksEnabled || status.httpEnabled
+            systemProxyEnabled = status.socksEnabled || status.httpEnabled || status.httpsEnabled
         case .failure:
             systemProxyEnabled = false
         }
+
+        await enforceCampusNetworkPolicy()
 
         let modeResult = await helper.getMode()
         switch modeResult {
@@ -94,7 +157,94 @@ class StatusViewModel: ObservableObject {
         await loadProfiles()
     }
 
+    func addCurrentWiFiToCampusNetworks() {
+        guard let ssid = currentWiFiSSID else { return }
+        addCampusNetwork(ssid)
+    }
+
+    func requestWiFiAccess() {
+        guard CLLocationManager.locationServicesEnabled() else {
+            lastError = "请在系统设置中启用定位服务后读取 Wi-Fi 名称。"
+            return
+        }
+
+        switch locationManager.authorizationStatus {
+        case .notDetermined:
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            locationManager.requestWhenInUseAuthorization()
+        case .denied, .restricted:
+            lastError = "请在系统设置的隐私与安全性中允许 ProxyCat 使用定位服务。"
+        default:
+            break
+        }
+    }
+
+    func addCampusNetwork(_ ssid: String) {
+        guard !ssid.isEmpty, !protectedWiFiSSIDs.contains(ssid) else { return }
+        protectedWiFiSSIDs.append(ssid)
+    }
+
+    func removeCampusNetwork(_ ssid: String) {
+        protectedWiFiSSIDs.removeAll { $0 == ssid }
+    }
+
+    private func enforceCampusNetworkPolicy() async {
+        guard !campusActionInProgress else { return }
+        currentWiFiSSID = wifiSSIDProvider()
+        guard campusProtectionEnabled,
+              let ssid = currentWiFiSSID,
+              protectedWiFiSSIDs.contains(ssid) else {
+            lastCampusPromptSSID = nil
+            campusProtectionNotice = nil
+            return
+        }
+
+        guard systemProxyEnabled || coreRunning || isBootstrapping else {
+            lastCampusPromptSSID = nil
+            return
+        }
+
+        campusActionInProgress = true
+        defer { campusActionInProgress = false }
+        if campusNetworkAction == .prompt {
+            guard lastCampusPromptSSID != ssid else { return }
+            lastCampusPromptSSID = ssid
+            campusProtectionNotice = "校园网「\(ssid)」：ProxyCat 代理仍在运行。"
+            guard campusPrompt(ssid) else { return }
+        }
+
+        let result = await helper.disconnectForCampusNetwork()
+        switch result {
+        case .success:
+            systemProxyEnabled = false
+            coreRunning = false
+            corePID = 0
+            toggleTestResult = nil
+            campusProtectionNotice = "校园网「\(ssid)」：已关闭系统代理并停止代理引擎。"
+        case .failure(let error):
+            lastError = "校园网断开代理失败：\(error.localizedDescription)"
+            campusProtectionNotice = "校园网「\(ssid)」：未能完全关闭代理，请检查错误信息。"
+        }
+    }
+
+    private func campusSettingsChanged() {
+        lastCampusPromptSSID = nil
+        Task { await refreshStatus() }
+    }
+
+    private func canStartProxyOnCurrentNetwork() -> Bool {
+        currentWiFiSSID = wifiSSIDProvider()
+        guard campusProtectionEnabled, campusNetworkAction == .disconnect,
+              let ssid = currentWiFiSSID, protectedWiFiSSIDs.contains(ssid) else {
+            lastCampusPromptSSID = nil
+            return true
+        }
+        campusProtectionNotice = "校园网「\(ssid)」：自动断开模式已阻止开启 ProxyCat 代理。"
+        return false
+    }
+
     func enableSystemProxy() async {
+        guard canStartProxyOnCurrentNetwork() else { return }
         isToggleTesting = true
         toggleTestResult = nil
         defer { isToggleTesting = false }
@@ -105,6 +255,9 @@ class StatusViewModel: ObservableObject {
             await refreshStatus()
             return
         }
+
+        await refreshStatus()
+        guard systemProxyEnabled else { return }
 
         // Test the currently selected group (Mihomo tests its selected proxy).
         // Fall back to the first group's name if currentGroup is empty (e.g. cold start).
@@ -141,6 +294,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func startCore() async {
+        guard canStartProxyOnCurrentNetwork() else { return }
         let result = await helper.startCore()
         if case .failure(let error) = result {
             lastError = "Start core failed: \(error.localizedDescription)"
@@ -157,6 +311,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func restartCore() async {
+        guard canStartProxyOnCurrentNetwork() else { return }
         let result = await helper.restartCore()
         if case .failure(let error) = result {
             lastError = "Restart core failed: \(error.localizedDescription)"
@@ -282,6 +437,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func activateProfile(id: String) async {
+        guard canStartProxyOnCurrentNetwork() else { return }
         let result = await helper.activateProfile(id: id)
         if case .failure(let error) = result {
             lastError = "Activate profile failed: \(error.localizedDescription)"
@@ -306,6 +462,12 @@ class StatusViewModel: ObservableObject {
     }
 
     func bootstrap(subscriptionURL: String) async {
+        guard canStartProxyOnCurrentNetwork() else {
+            bootstrapStatus = "校园网保护已阻止启动代理。"
+            return
+        }
+        isBootstrapping = true
+        defer { isBootstrapping = false }
         bootstrapStatus = "正在启动..."
         lastError = nil
         testResult = nil
@@ -349,5 +511,17 @@ class StatusViewModel: ObservableObject {
         } catch {
             lastError = "Open \(label) failed: \(error.localizedDescription)"
         }
+    }
+}
+
+private final class WiFiLocationDelegate: NSObject, CLLocationManagerDelegate {
+    private let onAuthorizationChange: @Sendable () -> Void
+
+    init(onAuthorizationChange: @escaping @Sendable () -> Void) {
+        self.onAuthorizationChange = onAuthorizationChange
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        onAuthorizationChange()
     }
 }
