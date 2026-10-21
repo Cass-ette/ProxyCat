@@ -77,31 +77,63 @@ actor HelperClient {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
 
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        // Launch and register on the actor so shutdown cannot miss an in-flight change.
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("proxycat-command-\(UUID().uuidString)", isDirectory: true)
+        let outputURL = outputDirectory.appendingPathComponent("stdout")
+        let errorURL = outputDirectory.appendingPathComponent("stderr")
+        let outputHandle: FileHandle
+        let errorHandle: FileHandle
         do {
-            try process.run()
+            try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+            guard FileManager.default.createFile(atPath: outputURL.path, contents: nil),
+                  FileManager.default.createFile(atPath: errorURL.path, contents: nil) else {
+                try? FileManager.default.removeItem(at: outputDirectory)
+                return .failure(.executionFailed("Could not create command output files"))
+            }
+            outputHandle = try FileHandle(forWritingTo: outputURL)
+            errorHandle = try FileHandle(forWritingTo: errorURL)
+            process.standardOutput = outputHandle
+            process.standardError = errorHandle
         } catch {
+            try? FileManager.default.removeItem(at: outputDirectory)
             return .failure(.executionFailed(error.localizedDescription))
         }
 
-        let command = Task.detached { () -> Result<Data, HelperError> in
-            // Drain both pipes while the process runs, including large diagnostics.
-            async let errorData = Self.readToEnd(errorPipe.fileHandleForReading)
-            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderr = String(decoding: await errorData, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            process.waitUntilExit()
+        let command = Task { () -> Result<Data, HelperError> in
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    do {
+                        // Keep launch and wait on the same worker so Foundation's
+                        // process termination monitor stays attached to its run loop.
+                        try process.run()
+                        try? outputHandle.close()
+                        try? errorHandle.close()
+                        process.waitUntilExit()
 
-            guard process.terminationStatus == 0 else {
-                let message = stderr.isEmpty ? "proxyctl exited with status \(process.terminationStatus)" : stderr
-                return .failure(.executionFailed(message))
+                        let data = try Data(contentsOf: outputURL)
+                        let errorData = try Data(contentsOf: errorURL)
+                        let stderr = String(decoding: errorData, as: UTF8.self)
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let result: Result<Data, HelperError>
+                        if process.terminationStatus == 0 {
+                            result = .success(data)
+                        } else {
+                            let commandName = args.joined(separator: " ")
+                            let message = stderr.isEmpty
+                                ? "proxyctl \(commandName) exited with status \(process.terminationStatus)"
+                                : stderr
+                            result = .failure(.executionFailed(message))
+                        }
+                        try? FileManager.default.removeItem(at: outputDirectory)
+                        continuation.resume(returning: result)
+                    } catch {
+                        try? outputHandle.close()
+                        try? errorHandle.close()
+                        try? FileManager.default.removeItem(at: outputDirectory)
+                        continuation.resume(returning: .failure(.executionFailed(error.localizedDescription)))
+                    }
+                }
             }
-            return .success(data)
         }
 
         let id = UUID()
@@ -110,10 +142,6 @@ actor HelperClient {
         }
         defer { lifecycleCommands[id] = nil }
         return await command.value
-    }
-
-    private static func readToEnd(_ handle: FileHandle) async -> Data {
-        handle.readDataToEndOfFile()
     }
 
     func shutdown() async -> Result<Void, HelperError> {

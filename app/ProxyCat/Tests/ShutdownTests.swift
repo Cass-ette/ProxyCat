@@ -35,6 +35,16 @@ private final class Fixture {
                 echo 'core stop' >> "$log"
                 if [ -f "$fixture_dir/fail-stop" ]; then exit 8; fi
                 ;;
+            'subscription update')
+                if [ -f "$fixture_dir/large-io" ]; then
+                    i=0
+                    while [ "$i" -lt 20000 ]; do
+                        printf 'output-%05d-abcdefghijklmnopqrstuvwxyz0123456789\n' "$i"
+                        printf 'diagnostic-%05d-abcdefghijklmnopqrstuvwxyz0123456789\n' "$i" >&2
+                        i=$((i + 1))
+                    done
+                fi
+                ;;
             bootstrap*)
                 trap 'echo "bootstrap stopped" >> "$log"; exit 0' TERM
                 echo 'bootstrap started' >> "$log"
@@ -74,8 +84,10 @@ struct ShutdownTests {
         try await waitsForEnableAndRejectsNewActions()
         try await failureKeepsCoreAndAllowsRetry()
         try await coreStopFailureDoesNotLeaveProxyEnabled()
+        try await commandFailureWithoutStderrIsDescriptive()
+        try await largeCommandOutputDoesNotDeadlock()
         try await bootstrapStopsBeforeCleanup()
-        print("Passed 5 shutdown regression tests")
+        print("Passed 7 subprocess and shutdown regression tests")
     }
 
     static func cleanupIsOrderedAndShared() async throws {
@@ -125,6 +137,23 @@ struct ShutdownTests {
         try fixture.flag("fail-stop")
         try await fixture.helper.shutdown().get()
         try expect(fixture.commands == ["system-proxy off", "core stop"], "Proxy must be off even when core stop fails")
+    }
+
+    static func commandFailureWithoutStderrIsDescriptive() async throws {
+        let fixture = try Fixture()
+        try fixture.flag("fail-stop")
+        let result = await fixture.helper.stopCore()
+        guard case .failure(.executionFailed(let message)) = result else {
+            throw TestFailure(description: "A nonzero command exit without stderr must report a failure")
+        }
+        try expect(message.contains("core stop") && message.contains("status 8"),
+                   "Command error should identify the command and exit code: \(message)")
+    }
+
+    static func largeCommandOutputDoesNotDeadlock() async throws {
+        let fixture = try Fixture()
+        try fixture.flag("large-io")
+        try await fixture.helper.updateSubscription().get()
     }
 
     static func bootstrapStopsBeforeCleanup() async throws {
