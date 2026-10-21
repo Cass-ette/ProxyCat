@@ -23,6 +23,16 @@ printf 'fake app binary' > "$APP/Contents/MacOS/ProxyCat"
 BUILD
 chmod +x "$TMP_DIR/scripts/build-app.sh"
 
+# DMG content is checked by test-dmg.sh against a real built app. Here only
+# verify that the combined packager invokes the DMG step with the built app.
+cat > "$TMP_DIR/scripts/package-dmg.sh" <<'DMG'
+#!/bin/bash
+set -euo pipefail
+[[ -f "$1/Contents/MacOS/ProxyCat" ]]
+touch "$2/dmg-invoked"
+DMG
+chmod +x "$TMP_DIR/scripts/package-dmg.sh"
+
 cat > "$TMP_DIR/app/ProxyCat/ProxyCat/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -51,6 +61,10 @@ if [[ ! -f "$INSTALLER_ZIP_PATH" ]]; then
 fi
 if [[ ! -f "$INSTALLER_ZIP_PATH.sha256" ]]; then
     echo "expected installer SHA256 sidecar at $INSTALLER_ZIP_PATH.sha256" >&2
+    exit 1
+fi
+if [[ ! -f "$TMP_DIR/dist/dmg-invoked" ]]; then
+    echo "expected combined packaging to build the DMG" >&2
     exit 1
 fi
 if ! grep -q "$(shasum -a 256 "$INSTALLER_ZIP_PATH" | awk '{print $1}')" "$INSTALLER_ZIP_PATH.sha256"; then

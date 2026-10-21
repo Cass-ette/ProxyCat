@@ -131,4 +131,6 @@ rm -rf "$INSTALLER_WORKDIR"
 echo "Package created: $ZIP_PATH"
 echo "Installer package created: $INSTALLER_ZIP_PATH"
 echo "Installer SHA256 created: $INSTALLER_ZIP_PATH.sha256"
-echo "Share the installer zip with non-technical users. They should unzip it and double-click 安装 ProxyCat.command."
+
+"$SCRIPT_DIR/package-dmg.sh" "$APP_PATH" "$DIST_DIR"
+echo "Share ProxyCat-$VERSION.dmg for drag-to-Applications installation."

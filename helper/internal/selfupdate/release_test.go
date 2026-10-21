@@ -1,10 +1,45 @@
 package selfupdate
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestFetchLatestReleasePrefersMatchedDMGAndSupportsLegacyZIP(t *testing.T) {
+	for _, tc := range []struct {
+		name, assets, format, url string
+		wantError                 bool
+	}{
+		{"dmg only", `{"name":"ProxyCat-0.3.0.dmg","browser_download_url":"/app.dmg"},{"name":"ProxyCat-0.3.0.dmg.sha256","browser_download_url":"/app.dmg.sha256"}`, "dmg", "/app.dmg", false},
+		{"both formats", `{"name":"ProxyCat-0.3.0-installer.zip","browser_download_url":"/app.zip"},{"name":"ProxyCat-0.3.0-installer.zip.sha256","browser_download_url":"/app.zip.sha256"},{"name":"ProxyCat-0.3.0.dmg","browser_download_url":"/app.dmg"},{"name":"ProxyCat-0.3.0.dmg.sha256","browser_download_url":"/app.dmg.sha256"}`, "dmg", "/app.dmg", false},
+		{"legacy zip", `{"name":"ProxyCat-0.3.0-installer.zip","browser_download_url":"/app.zip"},{"name":"ProxyCat-0.3.0-installer.zip.sha256","browser_download_url":"/app.zip.sha256"}`, "zip", "/app.zip", false},
+		{"incomplete dmg falls back", `{"name":"ProxyCat-0.3.0.dmg","browser_download_url":"/app.dmg"},{"name":"ProxyCat-0.3.0-installer.zip","browser_download_url":"/app.zip"},{"name":"ProxyCat-0.3.0-installer.zip.sha256","browser_download_url":"/app.zip.sha256"}`, "zip", "/app.zip", false},
+		{"mixed checksums", `{"name":"ProxyCat-0.3.0.dmg","browser_download_url":"/app.dmg"},{"name":"ProxyCat-0.3.0-installer.zip.sha256","browser_download_url":"/app.zip.sha256"}`, "", "", true},
+		{"wrong version", `{"name":"ProxyCat-0.2.0.dmg","browser_download_url":"/app.dmg"},{"name":"ProxyCat-0.2.0.dmg.sha256","browser_download_url":"/app.dmg.sha256"}`, "", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, `{"tag_name":"v0.3.0","assets":[%s]}`, tc.assets)
+			}))
+			defer server.Close()
+			release, err := fetchLatestRelease(server.Client(), server.URL)
+			if tc.wantError {
+				if err == nil {
+					t.Fatal("expected an unmatched installer/checksum error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if release.Format != tc.format || release.InstallerURL != tc.url || release.SHA256URL != tc.url+".sha256" {
+				t.Fatalf("selected release = %+v", release)
+			}
+		})
+	}
+}
 
 func TestFetchLatestReleaseFindsStrictInstallerAndSHA(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

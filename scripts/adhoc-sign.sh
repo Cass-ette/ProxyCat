@@ -2,7 +2,7 @@
 set -e
 
 # scripts/adhoc-sign.sh
-# Ad-hoc sign the ProxyCat app for local use (no Developer ID required)
+# Ad-hoc sign the ProxyCat app for code integrity (no Developer ID required)
 # Usage: ./scripts/adhoc-sign.sh [path-to-app]
 
 APP_PATH="${1:-app/ProxyCat/build/Build/Products/Release/ProxyCat.app}"
@@ -27,7 +27,7 @@ codesign --sign - --force --deep --preserve-metadata=entitlements \
 
 # Verify signature
 echo "Verifying signature..."
-codesign --verify --verbose "$APP_PATH"
+codesign --verify --deep --strict --verbose "$APP_PATH"
 
-echo "Done. App is ad-hoc signed and ready for local use."
-echo "Note: Ad-hoc signed apps only work on this Mac."
+echo "Done. Code integrity verified."
+echo "This does not provide Developer ID trust or Apple notarization."

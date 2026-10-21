@@ -1,104 +1,57 @@
 # Release Process
 
-This document describes how to create a ProxyCat release for GitHub.
+ProxyCat ships a DMG for drag-to-Applications installation and in-app updates. Developer ID signing and notarization are not configured yet. Starting with 0.12.1, the updater prefers a version-matched DMG and checksum, with fallback to older installer ZIP releases.
 
-## Creating a Release (Unsigned)
+## Build and package
 
-ProxyCat does not use Apple Developer ID signing in its initial releases. Users build locally or accept the unsigned app warning.
+Prerequisites: macOS, Go 1.21+, Xcode 13+, Python 3.10+ and GitHub push access. The DMG tools are pinned in `scripts/dmg/requirements.txt` and installed into an isolated environment under the ignored build directory. The first DMG build needs network access to download them.
 
-### Prerequisites
-
-- macOS with Go 1.21+ and Xcode 13+
-- GitHub push access to Cass-ette/ProxyCat
-
-### Steps
-
-1. **Update version references**
-   - Update `CFBundleShortVersionString` in `app/ProxyCat/ProxyCat/Info.plist`
-   - Update version badge in `README.md` if needed
-   - Commit: `git commit -m "chore: bump version to X.Y.Z"`
-
-2. **Build the app**
+1. Update `CFBundleShortVersionString` in `app/ProxyCat/ProxyCat/Info.plist` and both `MARKETING_VERSION` values in the Xcode project.
+2. Run the regression checks:
    ```bash
-   ./scripts/build-app.sh
+   bash scripts/test-shutdown.sh
+   bash scripts/test-campus-network.sh
+   bash scripts/test-connection-recovery.sh
+   bash scripts/package-unsigned_test.sh
    ```
-
-3. **Ad-hoc sign for verification**
+3. Build the universal app and all distribution files:
    ```bash
-   ./scripts/adhoc-sign.sh
+   bash scripts/package-unsigned.sh
    ```
-
-4. **Create a zip archive**
+   This restores the source helper binary after building and produces:
+   - `dist/ProxyCat-X.Y.Z.dmg`
+   - `dist/ProxyCat-X.Y.Z.dmg.sha256`
+   - `dist/ProxyCat-X.Y.Z.zip`
+   - `dist/ProxyCat-X.Y.Z-installer.zip`
+   - `dist/ProxyCat-X.Y.Z-installer.zip.sha256`
+4. Mount the DMG without opening Finder and verify its contents:
    ```bash
-   cd app/ProxyCat/build/Build/Products/Release
-   zip -r ProxyCat-X.Y.Z.zip ProxyCat.app
+   bash scripts/test-dmg.sh dist/ProxyCat-X.Y.Z.dmg
    ```
+   This checks the image checksum, Applications link, Finder layout files, app version, Intel/Apple Silicon binaries and code signatures, then unmounts the image. It does not install or launch the app.
+5. Commit the source changes, push, and wait for GitHub Actions to pass. Push a `vX.Y.Z` tag at the tested commit. The release workflow builds and verifies the app and DMG, then publishes the DMG and its checksum to GitHub. The 0.12.1 transition release also includes the installer ZIP and checksum so versions up to 0.12.0 can update to the DMG-capable updater. Later releases default to the two DMG files.
+6. Verify the published asset checksums match the local files and that the release points at the intended tag.
 
-5. **Create GitHub release**
-   - Go to https://github.com/Cass-ette/ProxyCat/releases
-   - Click "Draft a new release"
-   - Choose or create tag `vX.Y.Z`
-   - Title: `ProxyCat X.Y.Z`
-   - Description: Summarize changes since last release
-   - Attach `ProxyCat-X.Y.Z.zip`
-   - Publish release
-
-6. **Verify the CI passed**
-   - Check GitHub Actions build status on main branch
-
-## User Installation (Unsigned App)
-
-Since ProxyCat is unsigned, macOS will show a security warning on first launch.
-
-### Installation Steps
-
-1. Download `ProxyCat-X.Y.Z.zip` from GitHub Releases
-2. Extract the zip file
-3. Move `ProxyCat.app` to `/Applications` or `~/Applications`
-4. **First launch**:
-   - Right-click ProxyCat.app and select "Open"
-   - Click "Open" in the security dialog
-   - Or: System Settings → Privacy & Security → Security → "Open Anyway"
-
-### Known Limitations
-
-- Ad-hoc signed apps only work on the Mac that built them
-- Unsigned apps show security warnings on first launch
-- No automatic updates (check GitHub releases manually)
-- Not distributed via App Store
-
-## Building From Source
-
-Users can also build locally to avoid unsigned app warnings:
+To add a DMG to an existing release without rebuilding or changing its ZIPs:
 
 ```bash
-git clone https://github.com/Cass-ette/ProxyCat.git
-cd ProxyCat
-./scripts/build-app.sh
-./scripts/adhoc-sign.sh
-open app/ProxyCat/build/Build/Products/Release/ProxyCat.app
+bash scripts/package-dmg.sh /path/to/ProxyCat.app
+bash scripts/test-dmg.sh dist/ProxyCat-X.Y.Z.dmg
 ```
 
-Building locally produces an app signed for that specific Mac, which runs without warnings.
+Use the app from that release's ZIP. DMG packaging signs a staging copy and leaves the original app unchanged. It uses `dmgbuild` to write Finder metadata without scripting Finder, so it also runs on macOS CI. To regenerate the included background image, run `swift scripts/dmg/background.swift`.
 
-## Future: Signed Releases
+## User installation
 
-If ProxyCat obtains an Apple Developer ID in the future:
+1. Download the DMG, open it, and drag ProxyCat to Applications.
+2. Quit an older running version before replacing it.
+3. Open ProxyCat from Applications; its cat icon appears in the menu bar.
+4. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**.
 
-1. Build with proper signing:
-   ```bash
-   xcodebuild -project ProxyCat.xcodeproj \
-     -scheme ProxyCat \
-     -configuration Release \
-     CODE_SIGN_IDENTITY="Developer ID Application: ..."
-   ```
+The DMG app is ad-hoc signed for code integrity. Ad-hoc signatures can be verified on other Macs, but do not establish Developer ID trust or replace Apple notarization. A DMG does not bypass Gatekeeper.
 
-2. Notarize with Apple:
-   ```bash
-   xcrun notarytool submit ProxyCat.zip --apple-id ... --team-id ... --wait
-   ```
+Dragging the app installs only ProxyCat.app. The optional legacy installer ZIP additionally offers a `proxycat` command in `/usr/local/bin`; in-app updates remain available with either installation method. In-app updates verify SHA-256 before mounting a DMG read-only, validate the bundle and signature, copy the app into staging, unmount, and replace the old app with a backup.
 
-3. Staple notarization:
-   ```bash
-   xcrun stapler staple ProxyCat.app
-   ```
+## Future signed releases
+
+For first launch without the unverified-developer prompt, sign the app and nested executables with a Developer ID Application identity, enable the hardened runtime, notarize the final distribution with `xcrun notarytool`, and staple the ticket before publishing.

@@ -75,17 +75,26 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Download installer zip
+	format := latest.Format
+	if format == "" { // Compatibility with callers supplying a legacy Release.
+		format = "zip"
+	}
+	if format != "zip" && format != "dmg" {
+		emit(stdout, jsonOutput, Event{Stage: "error", Message: "更新失败：安装包格式不正确"})
+		return 1
+	}
+
+	// Download the selected installer and verify it before extracting or mounting.
 	emit(stdout, jsonOutput, Event{Stage: "downloading", Message: "正在下载更新...", Progress: 20})
-	zipPath := filepath.Join(tmpDir, "update.zip")
-	if err := downloadFile(r.Client, latest.InstallerURL, zipPath, nil); err != nil {
+	installerPath := filepath.Join(tmpDir, "update."+format)
+	if err := downloadFile(r.Client, latest.InstallerURL, installerPath, nil); err != nil {
 		emit(stdout, jsonOutput, Event{Stage: "error", Message: "安装包下载失败：" + err.Error()})
 		return 1
 	}
 
 	// Download and verify SHA256
 	emit(stdout, jsonOutput, Event{Stage: "verifying", Message: "正在验证更新包...", Progress: 50})
-	sha256Path := filepath.Join(tmpDir, "update.zip.sha256")
+	sha256Path := installerPath + ".sha256"
 	if err := downloadFile(r.Client, latest.SHA256URL, sha256Path, nil); err != nil {
 		emit(stdout, jsonOutput, Event{Stage: "error", Message: "校验文件下载失败：" + err.Error()})
 		return 1
@@ -100,7 +109,7 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 		emit(stdout, jsonOutput, Event{Stage: "error", Message: err.Error()})
 		return 1
 	}
-	if err := verifyFileSHA256(zipPath, expectedHash); err != nil {
+	if err := verifyFileSHA256(installerPath, expectedHash); err != nil {
 		emit(stdout, jsonOutput, Event{Stage: "error", Message: err.Error()})
 		return 1
 	}
@@ -108,7 +117,12 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 	// Extract
 	emit(stdout, jsonOutput, Event{Stage: "installing", Message: "正在安装更新...", Progress: 70})
 	extractDir := filepath.Join(tmpDir, "extracted")
-	newApp, err := extractInstallerZip(zipPath, extractDir)
+	var newApp string
+	if format == "dmg" {
+		newApp, err = extractInstallerDMG(installerPath, extractDir)
+	} else {
+		newApp, err = extractInstallerZip(installerPath, extractDir)
+	}
 	if err != nil {
 		emit(stdout, jsonOutput, Event{Stage: "error", Message: err.Error()})
 		return 1
@@ -117,6 +131,10 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 	// Validate bundle
 	if err := validateBundle(newApp); err != nil {
 		emit(stdout, jsonOutput, Event{Stage: "error", Message: err.Error()})
+		return 1
+	}
+	if version, err := ReadBundleVersion(newApp); err != nil || version != latest.Version {
+		emit(stdout, jsonOutput, Event{Stage: "error", Message: "更新失败：应用版本与发布版本不一致"})
 		return 1
 	}
 

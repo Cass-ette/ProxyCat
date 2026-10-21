@@ -4,17 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 )
-
-var installerAssetPattern = regexp.MustCompile(`^ProxyCat-(\d+\.\d+\.\d+)-installer\.zip$`)
 
 type Release struct {
 	Version      string
 	InstallerURL string
 	SHA256URL    string
 	Size         int64
+	Format       string
 }
 
 type githubRelease struct {
@@ -52,20 +50,24 @@ func fetchLatestRelease(client *http.Client, endpoint string) (Release, error) {
 		return Release{}, err
 	}
 
-	var release Release
-	release.Version = versionText
-	for _, asset := range decoded.Assets {
-		match := installerAssetPattern.FindStringSubmatch(asset.Name)
-		if match != nil && match[1] == versionText {
-			release.InstallerURL = asset.URL
-			release.Size = asset.Size
+	// Prefer the same DMG offered for manual installation. Keep ZIP support
+	// for releases published before DMG updates were available, and never mix
+	// an installer's checksum with a different format or version.
+	for _, candidate := range []struct{ suffix, format string }{{".dmg", "dmg"}, {"-installer.zip", "zip"}} {
+		release := Release{Version: versionText, Format: candidate.format}
+		name := "ProxyCat-" + versionText + candidate.suffix
+		for _, asset := range decoded.Assets {
+			if asset.Name == name {
+				release.InstallerURL = asset.URL
+				release.Size = asset.Size
+			}
+			if asset.Name == name+".sha256" {
+				release.SHA256URL = asset.URL
+			}
 		}
-		if asset.Name == "ProxyCat-"+versionText+"-installer.zip.sha256" {
-			release.SHA256URL = asset.URL
+		if release.InstallerURL != "" && release.SHA256URL != "" {
+			return release, nil
 		}
 	}
-	if release.InstallerURL == "" || release.SHA256URL == "" {
-		return Release{}, fmt.Errorf("更新失败：安装包格式不正确")
-	}
-	return release, nil
+	return Release{}, fmt.Errorf("更新失败：安装包格式不正确")
 }

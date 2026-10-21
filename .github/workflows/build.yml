@@ -42,6 +42,10 @@ jobs:
         with:
           go-version: '^1.21'
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Build proxyctl universal binary
         run: |
           cd helper
@@ -82,4 +86,23 @@ jobs:
         with:
           name: ProxyCat-app
           path: app/ProxyCat/build/Build/Products/Release/ProxyCat.app
+          retention-days: 7
+
+      - name: Test package orchestration
+        run: bash scripts/package-unsigned_test.sh
+
+      - name: Build and verify DMG
+        run: |
+          bash scripts/package-dmg.sh
+          bash scripts/test-dmg.sh dist/ProxyCat-*.dmg
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' app/ProxyCat/ProxyCat/Info.plist)"
+          (cd helper && PROXYCAT_TEST_DMG="$GITHUB_WORKSPACE/dist/ProxyCat-$VERSION.dmg" go test ./internal/selfupdate -run '^TestInstallRealDMG$' -count=1)
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProxyCat-dmg
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sha256
           retention-days: 7

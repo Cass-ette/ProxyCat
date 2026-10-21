@@ -24,6 +24,14 @@ The menu bar app shows:
 - Quick actions: toggle proxy, update subscription, test connection, restart core
 - Diagnostics and logs access
 
+## Installation
+
+Download `ProxyCat-X.Y.Z.dmg` from [GitHub Releases](https://github.com/Cass-ette/ProxyCat/releases/latest), open it, and drag **ProxyCat** onto **Applications**. Quit any older running version before replacing it, then open ProxyCat from Applications. Its cat icon appears in the menu bar.
+
+The app is not yet Developer ID signed or notarized. If macOS blocks the first launch, open **System Settings → Privacy & Security → Open Anyway**. A DMG does not remove that requirement.
+
+You can also use **检查更新** in the app, install the available update, and restart when prompted. Starting with 0.12.1, the updater prefers the DMG and still accepts older installer ZIPs. The 0.12.1 release includes a compatibility ZIP so earlier versions can upgrade through their existing updater; subsequent releases default to DMG and its checksum.
+
 ## Campus Wi-Fi Protection
 
 Open **校园网保护** in the menu, allow Wi-Fi name access when prompted, and add the current Wi-Fi or enter its SSID manually. SSIDs are matched exactly, including case and spaces, and the list and policy are saved locally.
@@ -134,7 +142,6 @@ ProxyCat MVP does not include:
 - Advanced DNS configuration
 - Complex rule editor
 - Airport account/traffic parsing
-- App auto-update
 - Apple Developer ID signing/notarization
 - Windows/Linux GUI
 
