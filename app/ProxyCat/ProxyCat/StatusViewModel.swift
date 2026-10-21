@@ -13,6 +13,7 @@ class StatusViewModel: ObservableObject {
     @Published var currentGroup = ""
     @Published var currentNode = ""
     @Published var proxyGroups: [ProxyGroup] = []
+    @Published var proxyGroupsError: String?
     @Published var lastError: String?
     @Published var isRefreshing = false
     @Published var testResult: TestResult?
@@ -137,21 +138,26 @@ class StatusViewModel: ObservableObject {
         case .success(let mode):
             currentMode = mode
         case .failure:
-            currentMode = "rule"
+            if !coreRunning { currentMode = "rule" }
         }
 
         // Proxy groups for current selection
         let groupsResult = await helper.getProxyGroups()
         switch groupsResult {
-        case .success(let groups):
-            proxyGroups = groups
-            let selectedGroup = groups.first { $0.name == currentGroup } ?? groups.first
-            currentGroup = selectedGroup?.name ?? ""
-            currentNode = selectedGroup?.now ?? ""
-        case .failure:
-            proxyGroups = []
-            currentGroup = ""
-            currentNode = ""
+        case .success(let groups) where !groups.isEmpty || !coreRunning:
+            updateProxyGroups(coreRunning ? groups : [])
+            proxyGroupsError = nil
+        case .success:
+            proxyGroupsError = "节点组暂未就绪，已保留上次的节点列表。"
+        case .failure(let error):
+            // A controller request can fail while switching networks or loading
+            // a config. Keep the last selection until the core actually stops.
+            if coreRunning {
+                proxyGroupsError = "暂时无法读取节点：\(error.localizedDescription)"
+            } else {
+                updateProxyGroups([])
+                proxyGroupsError = nil
+            }
         }
 
         await loadProfiles()
@@ -244,11 +250,38 @@ class StatusViewModel: ObservableObject {
     }
 
     func enableSystemProxy() async {
-        guard canStartProxyOnCurrentNetwork() else { return }
+        guard !isToggleTesting, canStartProxyOnCurrentNetwork() else { return }
         isToggleTesting = true
         toggleTestResult = nil
+        lastError = nil
         defer { isToggleTesting = false }
 
+        // Reuse the config on disk instead of downloading the subscription again.
+        let coreResult = await helper.getCoreStatus()
+        switch coreResult {
+        case .success(let status):
+            coreRunning = status.running
+            corePID = status.pid
+            if !status.running {
+                guard canStartProxyOnCurrentNetwork() else { return }
+                if case .failure(let error) = await helper.startCore() {
+                    lastError = "无法启动已保存的配置：\(error.localizedDescription)"
+                    return
+                }
+                coreRunning = true
+            }
+        case .failure(let error):
+            lastError = "无法检查代理引擎：\(error.localizedDescription)"
+            return
+        }
+
+        // Only fresh controller data can establish readiness; cached groups are
+        // for display and must not let us enable a proxy with no working core.
+        guard let target = await waitForProxyGroups() else { return }
+        guard canStartProxyOnCurrentNetwork() else {
+            await enforceCampusNetworkPolicy()
+            return
+        }
         let result = await helper.enableSystemProxy()
         if case .failure(let error) = result {
             lastError = "Enable proxy failed: \(error.localizedDescription)"
@@ -256,18 +289,20 @@ class StatusViewModel: ObservableObject {
             return
         }
 
-        await refreshStatus()
-        guard systemProxyEnabled else { return }
-
-        // Test the currently selected group (Mihomo tests its selected proxy).
-        // Fall back to the first group's name if currentGroup is empty (e.g. cold start).
-        let target = currentGroup.isEmpty ? (proxyGroups.first?.name ?? "") : currentGroup
-        guard !target.isEmpty else {
-            lastError = "Toggle test skipped: no proxy group available"
-            await refreshStatus()
+        // A periodic refresh may already be in flight. Read this result directly
+        // instead of relying on refreshStatus(), which skips overlapping work.
+        switch await helper.getSystemProxyStatus() {
+        case .success(let status):
+            systemProxyEnabled = status.socksEnabled || status.httpEnabled || status.httpsEnabled
+        case .failure(let error):
+            lastError = "无法确认系统代理状态：\(error.localizedDescription)"
             return
         }
+        await enforceCampusNetworkPolicy()
+        guard systemProxyEnabled else { return }
 
+        // Test the group returned by the readiness check, even if a periodic
+        // refresh updates the displayed selection while enabling the proxy.
         let delayResult = await helper.proxyDelay(name: target)
         switch delayResult {
         case .success(let r):
@@ -283,6 +318,49 @@ class StatusViewModel: ObservableObject {
         }
 
         await refreshStatus()
+    }
+
+    private func updateProxyGroups(_ groups: [ProxyGroup]) {
+        proxyGroups = groups
+        let selectedGroup = groups.first { $0.name == currentGroup } ?? groups.first
+        currentGroup = selectedGroup?.name ?? ""
+        currentNode = selectedGroup?.now ?? ""
+    }
+
+    private func waitForProxyGroups() async -> String? {
+        var failure = "代理引擎尚未提供可用的节点组。"
+        for attempt in 0..<10 {
+            guard !Task.isCancelled else { return nil }
+            guard canStartProxyOnCurrentNetwork() else {
+                await enforceCampusNetworkPolicy()
+                return nil
+            }
+            switch await helper.getProxyGroups() {
+            case .success(let groups) where !groups.isEmpty:
+                updateProxyGroups(groups)
+                proxyGroupsError = nil
+                return currentGroup
+            case .success:
+                failure = "代理引擎尚未提供可用的节点组。"
+            case .failure(let error):
+                failure = error.localizedDescription
+            }
+            if attempt < 9 {
+                do {
+                    try await Task.sleep(nanoseconds: 300_000_000)
+                } catch {
+                    return nil
+                }
+            }
+        }
+        if case .success(let status) = await helper.getCoreStatus() {
+            coreRunning = status.running
+            corePID = status.pid
+            if !status.running { updateProxyGroups([]) }
+        }
+        proxyGroupsError = "暂时无法读取节点：\(failure)"
+        lastError = "代理引擎尚未就绪，未开启系统代理。请稍后重试，无需重新粘贴订阅。\n\(failure)"
+        return nil
     }
 
     func disableSystemProxy() async {
@@ -432,7 +510,9 @@ class StatusViewModel: ObservableObject {
             profiles = p
             activeProfileID = p.first(where: { $0.active })?.id
         case .failure:
-            profiles = []
+            // Listing saved profiles does not depend on network availability.
+            // A transient helper error must not erase the visible saved list.
+            break
         }
     }
 

@@ -268,7 +268,9 @@ struct MenuContentView: View {
             }
 
             if viewModel.proxyGroups.isEmpty {
-                Text("暂无节点，请先一键启动或更新订阅")
+                Text(viewModel.coreRunning
+                     ? "节点尚未就绪，正在等待代理引擎。"
+                     : "代理引擎已停止，开启系统代理将使用已保存的配置启动。")
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 16)
@@ -300,6 +302,13 @@ struct MenuContentView: View {
                     .frame(maxHeight: 320)
                     .transition(.opacity)
                 }
+            }
+
+            if let error = viewModel.proxyGroupsError {
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 16)
             }
         }
         .padding(.bottom, 8)
@@ -658,7 +667,7 @@ struct MenuContentView: View {
 
     private var toggleFailureBanner: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("开启系统代理后无法连通 — 订阅或节点可能有问题。")
+            Text("连接测试暂未通过。切换网络后请稍候重试，也可更换节点或运行诊断。")
                 .font(.system(size: 12))
                 .foregroundColor(.red)
                 .fixedSize(horizontal: false, vertical: true)
@@ -708,6 +717,7 @@ struct MenuContentView: View {
                 MenuButton("开启系统代理", icon: "network") {
                     Task { await viewModel.enableSystemProxy() }
                 }
+                .disabled(viewModel.isToggleTesting)
             }
 
             MenuButton("更新订阅", icon: "arrow.clockwise") {

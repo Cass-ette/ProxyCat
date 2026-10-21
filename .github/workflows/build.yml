@@ -59,6 +59,7 @@ jobs:
             -project ProxyCat.xcodeproj \
             -scheme ProxyCat \
             -configuration Release \
+            -destination 'generic/platform=macOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO
 
@@ -67,6 +68,9 @@ jobs:
 
       - name: Test campus network protection
         run: bash scripts/test-campus-network.sh
+
+      - name: Test connection recovery
+        run: bash scripts/test-connection-recovery.sh
 
       - name: Verify app bundle
         run: |

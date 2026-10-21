@@ -30,6 +30,7 @@ xcodebuild \
     -project "$APP_DIR/ProxyCat.xcodeproj" \
     -scheme ProxyCat \
     -configuration Release \
+    -destination 'generic/platform=macOS' \
     -derivedDataPath "$APP_DIR/build" \
     CODE_SIGNING_ALLOWED=NO
 
