@@ -32,6 +32,8 @@ Prerequisites: macOS, Go 1.21+, Xcode 13+, Python 3.10+ and GitHub push access. 
 5. Commit the source changes, push, and wait for GitHub Actions to pass. Push a `vX.Y.Z` tag at the tested commit. The release workflow builds and verifies the app and DMG, then publishes the DMG and its checksum to GitHub. It also publishes the installer ZIP and checksum so versions up to 0.12.0 can still update, even when skipping releases. The plain app ZIP remains a local artifact; new installations should use the DMG.
 6. Verify the published asset checksums match the local files and that the release points at the intended tag.
 
+If a release job stops while uploading, run the Release workflow manually from the main branch with the existing tag. It resumes a draft by its release ID, replaces its incomplete assets, verifies all uploaded checksums and only then publishes it. It refuses to overwrite an already published release.
+
 To add a DMG to an existing release without rebuilding or changing its ZIPs:
 
 ```bash
