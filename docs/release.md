@@ -29,7 +29,7 @@ Prerequisites: macOS, Go 1.21+, Xcode 13+, Python 3.10+ and GitHub push access. 
    bash scripts/test-dmg.sh dist/ProxyCat-X.Y.Z.dmg
    ```
    This checks the image checksum, Applications link, Finder layout files, app version, Intel/Apple Silicon binaries and code signatures, then unmounts the image. It does not install or launch the app.
-5. Commit the source changes, push, and wait for GitHub Actions to pass. Push a `vX.Y.Z` tag at the tested commit. The release workflow builds and verifies the app and DMG, then publishes the DMG and its checksum to GitHub. The 0.12.1 transition release also includes the installer ZIP and checksum so versions up to 0.12.0 can update to the DMG-capable updater. Later releases default to the two DMG files.
+5. Commit the source changes, push, and wait for GitHub Actions to pass. Push a `vX.Y.Z` tag at the tested commit. The release workflow builds and verifies the app and DMG, then publishes the DMG and its checksum to GitHub. It also publishes the installer ZIP and checksum so versions up to 0.12.0 can still update, even when skipping releases. The plain app ZIP remains a local artifact; new installations should use the DMG.
 6. Verify the published asset checksums match the local files and that the release points at the intended tag.
 
 To add a DMG to an existing release without rebuilding or changing its ZIPs:

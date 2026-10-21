@@ -30,7 +30,7 @@ Download `ProxyCat-X.Y.Z.dmg` from [GitHub Releases](https://github.com/Cass-ett
 
 The app is not yet Developer ID signed or notarized. If macOS blocks the first launch, open **System Settings → Privacy & Security → Open Anyway**. A DMG does not remove that requirement.
 
-You can also use **检查更新** in the app, install the available update, and restart when prompted. Starting with 0.12.1, the updater prefers the DMG and still accepts older installer ZIPs. The 0.12.1 release includes a compatibility ZIP so earlier versions can upgrade through their existing updater; subsequent releases default to DMG and its checksum.
+You can also use **检查更新** in the app, install the available update, and restart when prompted. Starting with 0.12.1, the updater prefers the DMG and still accepts older installer ZIPs. Releases include a compatibility ZIP so earlier versions can upgrade through their existing updater, even when skipping releases. Use the DMG for new installations.
 
 ## Campus Wi-Fi Protection
 
