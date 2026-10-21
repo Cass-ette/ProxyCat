@@ -27,6 +27,44 @@ enum HelperError: Error, LocalizedError {
     }
 }
 
+private final class UpdateOutputReader: @unchecked Sendable {
+    private let lock = NSLock()
+    private let decoder = JSONDecoder()
+    private let continuation: AsyncStream<UpdateEvent>.Continuation
+    private var buffer = Data()
+    private var finished = false
+
+    init(continuation: AsyncStream<UpdateEvent>.Continuation) {
+        self.continuation = continuation
+    }
+
+    func read(from handle: FileHandle, finishing: Bool = false) {
+        // A final drain can overlap an already queued readability callback.
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        buffer.append(finishing ? handle.readDataToEndOfFile() : handle.availableData)
+        while let newline = buffer.firstIndex(of: 10) {
+            let line = Data(buffer[..<newline])
+            buffer.removeSubrange(...newline)
+            emit(line)
+        }
+        if finishing {
+            if !buffer.isEmpty { emit(buffer) }
+            buffer.removeAll()
+            finished = true
+        }
+    }
+
+    private func emit(_ data: Data) {
+        if let event = try? decoder.decode(UpdateEvent.self, from: data) {
+            continuation.yield(event)
+        } else {
+            os_log("self-update: skipping malformed NDJSON line: %{public}@", String(decoding: data, as: UTF8.self))
+        }
+    }
+}
+
 actor HelperClient {
     static let shared = HelperClient()
 
@@ -54,6 +92,12 @@ actor HelperClient {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         task.arguments = ["proxyctl"]
+        guard let inputHandle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null")) else {
+            return nil
+        }
+        task.standardInput = inputHandle
+        task.standardError = FileHandle.nullDevice
+        defer { try? inputHandle.close() }
         let pipe = Pipe()
         task.standardOutput = pipe
         try? task.run()
@@ -88,9 +132,14 @@ actor HelperClient {
             .appendingPathComponent("proxycat-command-\(UUID().uuidString)", isDirectory: true)
         let outputURL = outputDirectory.appendingPathComponent("stdout")
         let errorURL = outputDirectory.appendingPathComponent("stderr")
+        let inputHandle: FileHandle
         let outputHandle: FileHandle
         let errorHandle: FileHandle
         do {
+            // Open stdin before stdout so a closed descriptor 0 cannot be
+            // reused for output and then overwritten during child launch.
+            inputHandle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+            process.standardInput = inputHandle
             try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
             guard FileManager.default.createFile(atPath: outputURL.path, contents: nil),
                   FileManager.default.createFile(atPath: errorURL.path, contents: nil) else {
@@ -109,12 +158,16 @@ actor HelperClient {
         let command = Task { () -> Result<Data, HelperError> in
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
+                    defer {
+                        try? inputHandle.close()
+                        try? outputHandle.close()
+                        try? errorHandle.close()
+                        try? FileManager.default.removeItem(at: outputDirectory)
+                    }
                     do {
                         // Keep launch and wait on the same worker so Foundation's
                         // process termination monitor stays attached to its run loop.
                         try process.run()
-                        try? outputHandle.close()
-                        try? errorHandle.close()
                         process.waitUntilExit()
 
                         let data = try Data(contentsOf: outputURL)
@@ -131,13 +184,13 @@ actor HelperClient {
                                 : stderr
                             result = .failure(.executionFailed(message))
                         }
-                        try? FileManager.default.removeItem(at: outputDirectory)
                         continuation.resume(returning: result)
                     } catch {
-                        try? outputHandle.close()
-                        try? errorHandle.close()
-                        try? FileManager.default.removeItem(at: outputDirectory)
-                        continuation.resume(returning: .failure(.executionFailed(error.localizedDescription)))
+                        let nsError = error as NSError
+                        let commandName = args.joined(separator: " ")
+                        let message = "proxyctl \(commandName): \(error.localizedDescription) (\(nsError.domain) \(nsError.code))"
+                        os_log("command: %{public}@", message)
+                        continuation.resume(returning: .failure(.executionFailed(message)))
                     }
                 }
             }
@@ -325,6 +378,15 @@ actor HelperClient {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = ["self-update", "--json"]
+                let inputHandle: FileHandle
+                do {
+                    inputHandle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+                    process.standardInput = inputHandle
+                } catch {
+                    continuation.yield(UpdateEvent(stage: "error", message: error.localizedDescription, progress: nil, newVersion: nil))
+                    continuation.finish()
+                    return
+                }
                 self.updateProcess = process
 
                 let outputPipe = Pipe()
@@ -332,21 +394,9 @@ actor HelperClient {
                 process.standardOutput = outputPipe
                 process.standardError = errorPipe
 
-                let decoder = JSONDecoder()
-                var buffer = Data()
+                let outputReader = UpdateOutputReader(continuation: continuation)
                 outputPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty else { return }
-                    buffer.append(data)
-                    while let newline = buffer.firstIndex(of: 10) {
-                        let line = buffer[..<newline]
-                        buffer.removeSubrange(...newline)
-                        if let event = try? decoder.decode(UpdateEvent.self, from: Data(line)) {
-                            continuation.yield(event)
-                        } else {
-                            os_log("self-update: skipping malformed NDJSON line: %{public}@", String(decoding: line, as: UTF8.self))
-                        }
-                    }
+                    outputReader.read(from: handle)
                 }
 
                 errorPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -358,29 +408,17 @@ actor HelperClient {
                 }
 
                 process.terminationHandler = { _ in
+                    try? inputHandle.close()
                     outputPipe.fileHandleForReading.readabilityHandler = nil
                     errorPipe.fileHandleForReading.readabilityHandler = nil
-                    let remaining = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                    if !remaining.isEmpty {
-                        buffer.append(remaining)
-                    }
-                    while let newline = buffer.firstIndex(of: 10) {
-                        let line = buffer[..<newline]
-                        buffer.removeSubrange(...newline)
-                        if let event = try? decoder.decode(UpdateEvent.self, from: Data(line)) {
-                            continuation.yield(event)
-                        }
-                    }
-                    if !buffer.isEmpty,
-                       let event = try? decoder.decode(UpdateEvent.self, from: buffer) {
-                        continuation.yield(event)
-                    }
+                    outputReader.read(from: outputPipe.fileHandleForReading, finishing: true)
                     continuation.finish()
                 }
 
                 do {
                     try process.run()
                 } catch {
+                    try? inputHandle.close()
                     continuation.yield(UpdateEvent(stage: "error", message: error.localizedDescription, progress: nil, newVersion: nil))
                     continuation.finish()
                 }
@@ -504,6 +542,15 @@ actor HelperClient {
                 let task = Process()
                 task.executableURL = URL(fileURLWithPath: executable)
                 task.arguments = ["bootstrap", subscriptionURL]
+                let inputHandle: FileHandle
+                do {
+                    inputHandle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+                    task.standardInput = inputHandle
+                } catch {
+                    continuation.yield("Failed to run: \(error.localizedDescription)")
+                    continuation.finish()
+                    return
+                }
 
                 let outputPipe = Pipe()
                 let errorPipe = Pipe()
@@ -527,6 +574,7 @@ actor HelperClient {
                 }
 
                 task.terminationHandler = { _ in
+                    try? inputHandle.close()
                     outputPipe.fileHandleForReading.readabilityHandler = nil
                     errorPipe.fileHandleForReading.readabilityHandler = nil
                     continuation.finish()
@@ -536,6 +584,7 @@ actor HelperClient {
                     try task.run()
                     bootstrapProcess = task
                 } catch {
+                    try? inputHandle.close()
                     continuation.yield("Failed to run: \(error.localizedDescription)")
                     continuation.finish()
                 }

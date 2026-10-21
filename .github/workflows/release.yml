@@ -70,6 +70,9 @@ jobs:
 
           附带的 ZIP 用于兼容旧版更新器。新安装请下载 DMG，已安装用户可以直接在应用内检查更新。
           NOTES
+          if [[ -f "docs/releases/$RELEASE_TAG.md" ]]; then
+            cp "docs/releases/$RELEASE_TAG.md" "$RUNNER_TEMP/release-notes.md"
+          fi
           # Draft releases are listed by the API but are not returned by the
           # release-by-tag endpoint. Use their ID throughout, including retries.
           RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .id")"

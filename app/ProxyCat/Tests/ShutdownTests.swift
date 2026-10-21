@@ -35,6 +35,22 @@ private final class Fixture {
                 echo 'core stop' >> "$log"
                 if [ -f "$fixture_dir/fail-stop" ]; then exit 8; fi
                 ;;
+            'core status')
+                echo '{"running":false,"pid":0}'
+                ;;
+            'system-proxy status')
+                echo '{"httpEnabled":false,"httpHost":"","httpPort":0,"httpsEnabled":false,"httpsHost":"","httpsPort":0,"socksEnabled":false,"socksHost":"","socksPort":0}'
+                ;;
+            'self-update --json')
+                if [ -f "$fixture_dir/many-update-events" ]; then
+                    i=0
+                    while [ "$i" -lt 32 ]; do
+                        printf '{"stage":"downloading","message":"event-%d"}\n' "$i"
+                        i=$((i + 1))
+                    done
+                fi
+                printf '{"stage":"done","message":"fixture update complete"}'
+                ;;
             'subscription update')
                 if [ -f "$fixture_dir/large-io" ]; then
                     i=0
@@ -46,6 +62,10 @@ private final class Fixture {
                 fi
                 ;;
             bootstrap*)
+                if [ -f "$fixture_dir/short-bootstrap" ]; then
+                    echo 'fixture bootstrap complete'
+                    exit 0
+                fi
                 trap 'echo "bootstrap stopped" >> "$log"; exit 0' TERM
                 echo 'bootstrap started' >> "$log"
                 while :; do sleep 0.02; done
@@ -80,12 +100,43 @@ private final class Fixture {
 @main
 struct ShutdownTests {
     static func main() async throws {
+        if CommandLine.arguments.contains("--closed-stdin") {
+            let reportURL = URL(fileURLWithPath: CommandLine.arguments[2])
+            func record(_ message: String) {
+                try? message.write(to: reportURL, atomically: true, encoding: .utf8)
+            }
+            record("closing stdin")
+            try FileHandle.standardInput.close()
+            let fixture = try Fixture()
+            record("enabling fixture proxy")
+            try await fixture.helper.enableSystemProxy().get()
+            record("reading fixture status")
+            _ = try await fixture.helper.getCoreStatus().get()
+            record("starting fixture bootstrap")
+            try fixture.flag("short-bootstrap")
+            let bootstrap = await fixture.helper.bootstrap(subscriptionURL: "https://example.invalid/test")
+            for await _ in bootstrap {}
+            record("starting fixture update")
+            let update = await fixture.helper.installUpdate()
+            var updateCompleted = false
+            for await event in update {
+                try expect(event.stage != "error", "Update must not inherit invalid stdin: \(event.message)")
+                updateCompleted = updateCompleted || event.stage == "done"
+            }
+            try expect(updateCompleted, "Update must complete with closed application stdin")
+            record("completed")
+            return
+        }
         try await cleanupIsOrderedAndShared()
         try await waitsForEnableAndRejectsNewActions()
         try await failureKeepsCoreAndAllowsRetry()
         try await coreStopFailureDoesNotLeaveProxyEnabled()
         try await commandFailureWithoutStderrIsDescriptive()
         try await largeCommandOutputDoesNotDeadlock()
+        try await concurrentCommandsKeepDescriptorsValid()
+        try commandsDoNotInheritClosedStandardInput()
+        try await launchFailureIdentifiesCommand()
+        try await streamingUpdateDeliversEachEventOnce()
         try await bootstrapStopsBeforeCleanup()
         try await campusDisconnectIsOrderedAndReusable()
         try await campusDisconnectWaitsAndRejectsNewActions()
@@ -93,7 +144,7 @@ struct ShutdownTests {
         try await campusDisconnectStopsBootstrap()
         try await shutdownDuringCampusDisconnect()
         try await campusCoreStopFailureIsReported()
-        print("Passed 13 subprocess, shutdown and campus disconnect regression tests")
+        print("Passed 17 subprocess, shutdown and campus disconnect regression tests")
     }
 
     static func cleanupIsOrderedAndShared() async throws {
@@ -160,6 +211,68 @@ struct ShutdownTests {
         let fixture = try Fixture()
         try fixture.flag("large-io")
         try await fixture.helper.updateSubscription().get()
+    }
+
+    static func concurrentCommandsKeepDescriptorsValid() async throws {
+        let fixture = try Fixture()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for worker in 0..<8 {
+                group.addTask {
+                    for _ in 0..<32 {
+                        switch worker % 6 {
+                        case 0: try await fixture.helper.enableSystemProxy().get()
+                        case 1: try await fixture.helper.disableSystemProxy().get()
+                        case 2: try await fixture.helper.restartCore().get()
+                        case 3: _ = try await fixture.helper.getCoreStatus().get()
+                        case 4: _ = try await fixture.helper.getSystemProxyStatus().get()
+                        default: try await fixture.helper.updateSubscription().get()
+                        }
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
+    }
+
+    static func commandsDoNotInheritClosedStandardInput() throws {
+        let reportURL = FileManager.default.temporaryDirectory.appendingPathComponent("proxycat-stdin-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: reportURL) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        process.arguments = ["--closed-stdin", reportURL.path]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let report = (try? String(contentsOf: reportURL, encoding: .utf8)) ?? "no progress"
+        try expect(process.terminationStatus == 0,
+                   "Commands must work with closed inherited stdin (status \(process.terminationStatus), \(report)): \(String(decoding: errorData, as: UTF8.self))")
+    }
+
+    static func launchFailureIdentifiesCommand() async throws {
+        let fixture = try Fixture()
+        let helper = HelperClient(proxyctlPath: fixture.directory.appendingPathComponent("missing-proxyctl").path)
+        guard case .failure(.executionFailed(let message)) = await helper.restartCore() else {
+            throw TestFailure(description: "Launching a missing helper must report a command failure")
+        }
+        try expect(message.contains("proxyctl core restart") && message.contains("NSCocoaErrorDomain"),
+                   "Launch errors must identify the command and system error: \(message)")
+    }
+
+    static func streamingUpdateDeliversEachEventOnce() async throws {
+        let fixture = try Fixture()
+        try fixture.flag("many-update-events")
+        let expected = (0..<32).map { "event-\($0)" } + ["fixture update complete"]
+        for _ in 0..<12 {
+            let stream = await fixture.helper.installUpdate()
+            var messages: [String] = []
+            for await event in stream { messages.append(event.message) }
+            try expect(messages == expected,
+                       "Concurrent output callbacks and exit must preserve every update event once: \(messages)")
+        }
     }
 
     static func bootstrapStopsBeforeCleanup() async throws {
