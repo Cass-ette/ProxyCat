@@ -69,7 +69,7 @@ jobs:
           NOTES
           fi
           gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" --verify-tag --draft --title "ProxyCat $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
-          gh release view "$GITHUB_REF_NAME" --json assets > "$RUNNER_TEMP/release-assets.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-assets.json"
           python3 - "$RUNNER_TEMP/release-assets.json" "${ASSETS[@]}" <<'PY'
           import hashlib
           import json
