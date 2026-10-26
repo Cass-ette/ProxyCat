@@ -22,6 +22,7 @@ class StatusViewModel: ObservableObject {
     @Published var isTestingDelays = false
     @Published var toggleTestResult: ProxyDelayResult?
     @Published var isToggleTesting = false
+    @Published var isChangingMode = false
     @Published var bootstrapStatus: String = ""
     @Published private(set) var isBootstrapping = false
     @Published var updateStatus: String = ""
@@ -250,7 +251,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func enableSystemProxy() async {
-        guard !isToggleTesting, canStartProxyOnCurrentNetwork() else { return }
+        guard !isToggleTesting, !isChangingMode, canStartProxyOnCurrentNetwork() else { return }
         isToggleTesting = true
         toggleTestResult = nil
         lastError = nil
@@ -322,7 +323,20 @@ class StatusViewModel: ObservableObject {
 
     private func updateProxyGroups(_ groups: [ProxyGroup]) {
         proxyGroups = groups
-        let selectedGroup = groups.first { $0.name == currentGroup } ?? groups.first
+        if currentMode == "direct" {
+            currentGroup = groups.isEmpty ? "" : "DIRECT"
+            currentNode = groups.isEmpty ? "" : "DIRECT"
+            return
+        }
+        let selectedGroup: ProxyGroup?
+        if currentMode == "global" {
+            selectedGroup = groups.first { $0.name == "GLOBAL" }
+        } else {
+            let ruleGroups = groups.filter { $0.name != "GLOBAL" }
+            selectedGroup = ruleGroups.first { $0.name == currentGroup }
+                ?? ruleGroups.first { $0.type == "Selector" }
+                ?? ruleGroups.first
+        }
         currentGroup = selectedGroup?.name ?? ""
         currentNode = selectedGroup?.now ?? ""
     }
@@ -338,8 +352,11 @@ class StatusViewModel: ObservableObject {
             switch await helper.getProxyGroups() {
             case .success(let groups) where !groups.isEmpty:
                 updateProxyGroups(groups)
-                proxyGroupsError = nil
-                return currentGroup
+                if !currentGroup.isEmpty {
+                    proxyGroupsError = nil
+                    return currentGroup
+                }
+                failure = "当前模式的节点组尚未就绪。"
             case .success:
                 failure = "代理引擎尚未提供可用的节点组。"
             case .failure(let error):
@@ -398,8 +415,18 @@ class StatusViewModel: ObservableObject {
     }
 
     func setMode(_ mode: String) async {
+        guard !isChangingMode, !isToggleTesting else { return }
+        isChangingMode = true
+        defer { isChangingMode = false }
         let result = await helper.setMode(mode)
-        if case .failure(let error) = result {
+        switch result {
+        case .success:
+            currentMode = mode
+            toggleTestResult = nil
+            testResult = nil
+            lastError = nil
+            updateProxyGroups(proxyGroups)
+        case .failure(let error):
             lastError = "Set mode failed: \(error.localizedDescription)"
         }
         await refreshStatus()

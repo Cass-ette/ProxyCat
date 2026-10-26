@@ -1,10 +1,60 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+type connectionTestTransport func(*http.Request) (*http.Response, error)
+
+func (f connectionTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestConnectionFailureDetails(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		googleStatus int
+		githubStatus int
+		googleError  bool
+		wantGoogle   bool
+		wantGitHub   bool
+		wantErrors   []string
+	}{
+		{"both succeed", 204, 200, false, true, true, nil},
+		{"both status failures", 403, 503, false, false, false, []string{"Google returned HTTP 403", "GitHub returned HTTP 503"}},
+		{"partial failure", 204, 502, false, true, false, []string{"GitHub returned HTTP 502"}},
+		{"transport failure", 0, 200, true, false, true, []string{"Google request failed", "proxy unavailable"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			client := &http.Client{Transport: connectionTestTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				status := tt.githubStatus
+				if r.URL.Host == "clients3.google.com" {
+					if tt.googleError {
+						return nil, errors.New("proxy unavailable")
+					}
+					status = tt.googleStatus
+				}
+				return &http.Response{StatusCode: status, Body: http.NoBody, Header: make(http.Header), Request: r}, nil
+			})}
+			result := testConnection(client)
+			if calls != 2 || result.GoogleOK != tt.wantGoogle || result.GitHubOK != tt.wantGitHub {
+				t.Fatalf("result=%+v calls=%d", result, calls)
+			}
+			if len(tt.wantErrors) == 0 && result.Error != "" {
+				t.Fatal(result.Error)
+			}
+			for _, want := range tt.wantErrors {
+				if !strings.Contains(result.Error, want) {
+					t.Fatalf("error %q does not include %q", result.Error, want)
+				}
+			}
+		})
+	}
+}
 
 func TestTestConnectionSuccess(t *testing.T) {
 	// Create a mock server that simulates both Google and GitHub responses

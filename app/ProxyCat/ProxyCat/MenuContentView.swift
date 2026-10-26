@@ -446,6 +446,7 @@ struct MenuContentView: View {
                         .cornerRadius(6)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .disabled(viewModel.isChangingMode || viewModel.isToggleTesting)
             }
         }
         .padding(.horizontal, 16)
@@ -565,6 +566,13 @@ struct MenuContentView: View {
                     label: "连接测试",
                     value: "Google: \(testResult.googleOK ? "✓" : "✗"), GitHub: \(testResult.githubOK ? "✓" : "✗")"
                 )
+                if let error = testResult.error, !error.isEmpty {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundColor(.red)
+                        .lineLimit(3)
+                        .padding(.horizontal, 16)
+                }
             }
 
             if let report = viewModel.diagnoseReport {

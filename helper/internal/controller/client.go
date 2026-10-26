@@ -149,6 +149,11 @@ func (c *Client) SetMode(mode string) error {
 	default:
 		return fmt.Errorf("mode must be one of: rule, global, direct")
 	}
+	if mode == "global" {
+		if err := c.prepareGlobalProxy(); err != nil {
+			return err
+		}
+	}
 
 	body, err := json.Marshal(configPatchRequest{Mode: mode})
 	if err != nil {

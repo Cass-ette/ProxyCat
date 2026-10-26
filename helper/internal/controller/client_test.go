@@ -71,34 +71,38 @@ func TestGetConfigError(t *testing.T) {
 }
 
 func TestSetMode(t *testing.T) {
-	var capturedBody map[string]string
+	for _, mode := range []string{"rule", "direct"} {
+		t.Run(mode, func(t *testing.T) {
+			var capturedBody map[string]string
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PATCH" {
-			t.Fatalf("expected PATCH, got %s", r.Method)
-		}
-		if r.URL.Path != "/configs" {
-			t.Fatalf("expected /configs, got %s", r.URL.Path)
-		}
-		if r.Header.Get("Content-Type") != "application/json" {
-			t.Fatalf("expected application/json content type, got %s", r.Header.Get("Content-Type"))
-		}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "PATCH" {
+					t.Fatalf("expected PATCH, got %s", r.Method)
+				}
+				if r.URL.Path != "/configs" {
+					t.Fatalf("expected /configs, got %s", r.URL.Path)
+				}
+				if r.Header.Get("Content-Type") != "application/json" {
+					t.Fatalf("expected application/json content type, got %s", r.Header.Get("Content-Type"))
+				}
 
-		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
-			t.Fatalf("failed to decode request body: %v", err)
-		}
+				if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+					t.Fatalf("failed to decode request body: %v", err)
+				}
 
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer server.Close()
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
 
-	client := NewClient(server.URL)
-	if err := client.SetMode("global"); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
+			client := NewClient(server.URL)
+			if err := client.SetMode(mode); err != nil {
+				t.Fatalf("SetMode failed: %v", err)
+			}
 
-	if capturedBody["mode"] != "global" {
-		t.Fatalf("expected mode 'global', got %s", capturedBody["mode"])
+			if capturedBody["mode"] != mode {
+				t.Fatalf("expected mode %q, got %s", mode, capturedBody["mode"])
+			}
+		})
 	}
 }
 

@@ -741,7 +741,10 @@ func runTestJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 		fmt.Fprintf(stderr, "connection test failed: %v\n", err)
 		return 1
 	}
+	return writeTestResult(result, stdout, stderr, jsonOutput)
+}
 
+func writeTestResult(result *controller.TestResult, stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 	if jsonOutput {
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			fmt.Fprintf(stderr, "encode test result: %v\n", err)
@@ -767,6 +770,12 @@ func runTestJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 	}
 
 	if !result.GoogleOK || !result.GitHubOK {
+		// JSON callers need the structured result to explain which endpoint
+		// failed. Keep the process successful so the UI can decode it instead
+		// of replacing it with a generic "Command failed" message.
+		if jsonOutput {
+			return 0
+		}
 		return 1
 	}
 	return 0

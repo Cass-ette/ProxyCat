@@ -66,7 +66,16 @@ private final class Fixture {
                     touch "$fixture_dir/mode-held"
                     while [ -f "$fixture_dir/hold-mode" ]; do sleep 0.02; done
                 fi
-                echo '{"mode":"rule"}'
+                mode=rule
+                if [ -f "$fixture_dir/mode" ]; then mode=$(cat "$fixture_dir/mode"); fi
+                printf '{"mode":"%s"}\n' "$mode"
+                ;;
+            'mode set')
+                if [ -f "$fixture_dir/fail-mode" ]; then
+                    echo 'global selection unavailable' >&2
+                    exit 8
+                fi
+                printf '%s' "$3" > "$fixture_dir/mode"
                 ;;
             'groups list')
                 if [ -f "$fixture_dir/enter-campus" ]; then
@@ -94,6 +103,10 @@ private final class Fixture {
                     exit 0
                 fi
                 echo 'groups ready' >> "$log"
+                if [ -f "$fixture_dir/multi-groups" ]; then
+                    echo '{"GLOBAL":{"name":"GLOBAL","type":"Selector","now":"Auto","all":["DIRECT","Auto"]},"Auto":{"name":"Auto","type":"URLTest","now":"Node A","all":["Node A","Node B"]},"Proxy":{"name":"Proxy","type":"Selector","now":"Auto","all":["Auto","DIRECT"]}}'
+                    exit 0
+                fi
                 echo '{"Auto":{"name":"Auto","type":"Selector","now":"Node A","all":["Node A","Node B"]}}'
                 ;;
             'profile list')
@@ -101,6 +114,9 @@ private final class Fixture {
                 echo '[{"id":"saved","name":"Saved","url":"https://example.invalid/subscription","createdAt":"","updatedAt":"","active":true}]'
                 ;;
             'proxy-delay Auto') echo '{"delay":42}' ;;
+            'proxy-delay Proxy') echo '{"delay":43}' ;;
+            'proxy-delay GLOBAL') echo '{"delay":44}' ;;
+            'proxy-delay DIRECT') echo '{"delay":45}' ;;
             *) echo 'unexpected command' >&2; exit 9 ;;
         esac
         """#.write(to: executable, atomically: true, encoding: .utf8)
@@ -145,7 +161,9 @@ struct ConnectionRecoveryTests {
         try await campusArrivalCancelsRecovery()
         try await enablingDuringRefreshPublishesRealProxyStatus()
         try await repeatedEnableDoesNotStartTwice()
-        print("Passed 9 connection recovery regression tests")
+        try await selectionAndDelayFollowMode()
+        try await failedModeChangeKeepsSelection()
+        print("Passed 11 connection recovery and mode regression tests")
     }
 
     @MainActor
@@ -280,5 +298,37 @@ struct ConnectionRecoveryTests {
         try expect(fixture.commands.filter { $0 == "core start" }.count == 1 &&
                    fixture.commands.filter { $0 == "system-proxy on" }.count == 1,
                    "Repeated clicks during recovery must not issue duplicate lifecycle commands")
+    }
+
+    @MainActor
+    static func selectionAndDelayFollowMode() async throws {
+        let fixture = try Fixture()
+        try fixture.set("multi-groups")
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.viewModel.currentGroup == "Proxy" && fixture.viewModel.currentNode == "Auto",
+                   "Rule mode must prefer its selector instead of the alphabetically first or GLOBAL group")
+        for (mode, group, node, delay) in [("global", "GLOBAL", "Auto", 44), ("direct", "DIRECT", "DIRECT", 45), ("rule", "Proxy", "Auto", 43)] {
+            fixture.viewModel.testResult = TestResult(googleOK: true, githubOK: true, error: nil)
+            await fixture.viewModel.setMode(mode)
+            try expect(fixture.viewModel.currentMode == mode && fixture.viewModel.currentGroup == group && fixture.viewModel.currentNode == node,
+                       "Displayed selection must follow mode \(mode)")
+            try expect(fixture.viewModel.toggleTestResult == nil && fixture.viewModel.testResult == nil,
+                       "Changing modes must clear results from the previous route")
+            await fixture.viewModel.enableSystemProxy()
+            try expect(fixture.commands.contains("proxy-delay \(group) --json") && fixture.viewModel.toggleTestResult?.delay == delay,
+                       "Enable test must use the actual \(mode) route")
+        }
+    }
+
+    @MainActor
+    static func failedModeChangeKeepsSelection() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try fixture.set("fail-mode")
+        await fixture.viewModel.setMode("global")
+        try expect(fixture.viewModel.currentMode == "rule" && fixture.viewModel.currentGroup == "Auto" && fixture.viewModel.currentNode == "Node A",
+                   "A failed global preparation must leave the displayed rule route intact")
+        try expect(fixture.viewModel.lastError?.contains("global selection unavailable") == true && !fixture.viewModel.isChangingMode,
+                   "Report failure and allow another mode change")
     }
 }

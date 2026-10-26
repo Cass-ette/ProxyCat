@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Cass-ette/ProxyCat/helper/internal/controller"
 )
 
 func TestDiagnoseJSONCommand(t *testing.T) {
@@ -301,7 +303,7 @@ func TestTestJSONCommand(t *testing.T) {
 	stdout := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)
 	exitCode := run([]string{"test", "--json"}, stdout, stderr)
-	if exitCode != 0 && exitCode != 1 {
+	if exitCode != 0 {
 		t.Fatalf("unexpected exitCode = %d, stderr = %s", exitCode, stderr.String())
 	}
 	if stderr.Len() != 0 {
@@ -315,5 +317,24 @@ func TestTestJSONCommand(t *testing.T) {
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+}
+
+func TestFailedConnectionResultOutput(t *testing.T) {
+	result := &controller.TestResult{GoogleOK: false, GitHubOK: true, Error: "Google returned HTTP 503 (expected 204)"}
+	for _, jsonOutput := range []bool{true, false} {
+		var stdout, stderr bytes.Buffer
+		exitCode := writeTestResult(result, &stdout, &stderr, jsonOutput)
+		if jsonOutput {
+			if exitCode != 0 || stderr.Len() != 0 {
+				t.Fatalf("JSON failure must be returned in-band: exit=%d stderr=%s", exitCode, &stderr)
+			}
+			var decoded controller.TestResult
+			if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil || decoded != *result {
+				t.Fatalf("structured failure lost: result=%+v err=%v", decoded, err)
+			}
+		} else if exitCode != 1 || !strings.Contains(stderr.String(), result.Error) || !strings.Contains(stdout.String(), "Google: FAIL") {
+			t.Fatalf("human CLI must retain nonzero status and diagnostic: exit=%d stdout=%s stderr=%s", exitCode, &stdout, &stderr)
+		}
 	}
 }
