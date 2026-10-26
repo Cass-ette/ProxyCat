@@ -10,14 +10,15 @@ import (
 )
 
 type Runner struct {
-	CurrentVersion  string
-	ExpectedVersion string
-	Latest          Release
-	CheckOnly       bool
-	Client          *http.Client
-	Endpoint        string
-	AppPath         string
-	BackupDir       string
+	CurrentVersion   string
+	ExpectedVersion  string
+	Latest           Release
+	CheckOnly        bool
+	Client           *http.Client
+	Endpoint         string
+	FallbackEndpoint string
+	AppPath          string
+	BackupDir        string
 }
 
 type Event struct {
@@ -44,7 +45,7 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 		latest = r.Latest
 	} else if r.Endpoint != "" && r.Client != nil {
 		emit(stdout, jsonOutput, Event{Stage: "checking", Message: "正在检查更新..."})
-		fetched, err := fetchLatestRelease(r.Client, r.Endpoint)
+		fetched, err := fetchReleaseWithFallback(r.Client, r.Endpoint, r.FallbackEndpoint)
 		if err != nil {
 			emit(stdout, jsonOutput, Event{Stage: "error", Message: err.Error()})
 			return 1

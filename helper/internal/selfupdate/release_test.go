@@ -1,11 +1,93 @@
 package selfupdate
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+const validReleaseManifest = `{"tag_name":"v0.12.4","body":"## 修复\n- 更新检查","assets":[{"name":"ProxyCat-0.12.4.dmg","browser_download_url":"/app.dmg"},{"name":"ProxyCat-0.12.4.dmg.sha256","browser_download_url":"/app.dmg.sha256"}]}`
+
+func TestManifestCheckDoesNotConsumeAPIQuota(t *testing.T) {
+	apiCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/update.json" {
+			fmt.Fprint(w, validReleaseManifest)
+			return
+		}
+		apiCalls++
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	var out bytes.Buffer
+	runner := Runner{CurrentVersion: "0.12.3", CheckOnly: true, Client: server.Client(),
+		Endpoint: server.URL + "/update.json", FallbackEndpoint: server.URL + "/api/latest"}
+	if code := runner.Run(&out, true); code != 0 || !strings.Contains(out.String(), `"newVersion":"0.12.4"`) || !strings.Contains(out.String(), "更新检查") {
+		t.Fatalf("manifest check failed: %s", &out)
+	}
+	if apiCalls != 0 {
+		t.Fatalf("used anonymous API quota %d times", apiCalls)
+	}
+}
+
+func TestReleaseSourceFallback(t *testing.T) {
+	for _, status := range []int{403, 404, 429, 500, 200} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var calls []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.URL.Path)
+				if r.URL.Path == "/primary" {
+					w.WriteHeader(status)
+					fmt.Fprint(w, "invalid metadata")
+					return
+				}
+				fmt.Fprint(w, validReleaseManifest)
+			}))
+			defer server.Close()
+			release, err := fetchReleaseWithFallback(server.Client(), server.URL+"/primary", server.URL+"/fallback")
+			if err != nil || release.Version != "0.12.4" || strings.Join(calls, ",") != "/primary,/fallback" {
+				t.Fatalf("release = %+v, error = %v, calls = %v", release, err, calls)
+			}
+		})
+	}
+}
+
+func TestUnavailableSourcesReportRateLimit(t *testing.T) {
+	for _, status := range []int{403, 429} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/manifest" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("X-RateLimit-Remaining", "0")
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+			_, err := fetchReleaseWithFallback(server.Client(), server.URL+"/manifest", server.URL+"/api")
+			if err == nil || !strings.Contains(err.Error(), "限额") {
+				t.Fatalf("expected actionable rate limit, got %v", err)
+			}
+		})
+	}
+}
+
+func TestReleaseSourceFallbackAfterNetworkFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, validReleaseManifest)
+	}))
+	defer server.Close()
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	release, err := fetchReleaseWithFallback(server.Client(), closed.URL, server.URL)
+	if err != nil || release.Version != "0.12.4" {
+		t.Fatalf("release = %+v, error = %v", release, err)
+	}
+}
 
 func TestFetchLatestReleasePrefersMatchedDMGAndSupportsLegacyZIP(t *testing.T) {
 	for _, tc := range []struct {

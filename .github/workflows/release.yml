@@ -46,6 +46,7 @@ jobs:
           bash scripts/test-campus-network.sh
           bash scripts/test-connection-recovery.sh
           bash scripts/package-unsigned_test.sh
+          python3 scripts/test-update-manifest.py
 
       - name: Build release packages
         run: |
@@ -73,6 +74,10 @@ jobs:
           if [[ -f "docs/releases/$RELEASE_TAG.md" ]]; then
             cp "docs/releases/$RELEASE_TAG.md" "$RUNNER_TEMP/release-notes.md"
           fi
+          # Serve checks through a normal release asset, without anonymous API
+          # rate limits. Publish it atomically with the verified installers.
+          python3 scripts/generate-update-manifest.py "$RELEASE_TAG" "$GITHUB_REPOSITORY" "$RUNNER_TEMP/release-notes.md" dist
+          ASSETS+=("dist/update.json")
           # Draft releases are listed by the API but are not returned by the
           # release-by-tag endpoint. Use their ID throughout, including retries.
           RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .id")"

@@ -89,7 +89,9 @@ jobs:
           retention-days: 7
 
       - name: Test package orchestration
-        run: bash scripts/package-unsigned_test.sh
+        run: |
+          bash scripts/package-unsigned_test.sh
+          python3 scripts/test-update-manifest.py
 
       - name: Build and verify DMG
         run: |

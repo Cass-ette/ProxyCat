@@ -275,13 +275,14 @@ func runSelfUpdate(stdout io.Writer, stderr io.Writer, jsonOutput bool, checkOnl
 	}
 
 	runner := selfupdate.Runner{
-		CurrentVersion:  currentVersion,
-		ExpectedVersion: expectedVersion,
-		CheckOnly:       checkOnly,
-		Client:          updateHTTPClient(),
-		Endpoint:        "https://api.github.com/repos/Cass-ette/ProxyCat/releases/latest",
-		AppPath:         appPath,
-		BackupDir:       filepath.Join(filepath.Dir(appPath), "ProxyCat-Backups"),
+		CurrentVersion:   currentVersion,
+		ExpectedVersion:  expectedVersion,
+		CheckOnly:        checkOnly,
+		Client:           updateHTTPClient(),
+		Endpoint:         "https://github.com/Cass-ette/ProxyCat/releases/latest/download/update.json",
+		FallbackEndpoint: "https://api.github.com/repos/Cass-ette/ProxyCat/releases/latest",
+		AppPath:          appPath,
+		BackupDir:        filepath.Join(filepath.Dir(appPath), "ProxyCat-Backups"),
 	}
 	return runner.Run(stdout, jsonOutput)
 }

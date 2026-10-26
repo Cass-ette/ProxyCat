@@ -1,10 +1,12 @@
 package selfupdate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type Release struct {
@@ -31,24 +33,33 @@ type githubRelease struct {
 }
 
 func fetchLatestRelease(client *http.Client, endpoint string) (Release, error) {
-	resp, err := client.Get(endpoint)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return Release{}, fmt.Errorf("下载失败，请检查网络后重试")
+		return Release{}, fmt.Errorf("更新地址无效")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return Release{}, fmt.Errorf("无法连接更新服务，请检查网络后重试")
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0") {
+		return Release{}, fmt.Errorf("GitHub 更新请求已达限额，请稍后重试或查看所有版本")
+	}
 	if resp.StatusCode == http.StatusForbidden {
-		return Release{}, fmt.Errorf("更新检查暂时不可用，请稍后重试")
+		return Release{}, fmt.Errorf("更新服务拒绝访问（HTTP 403），请稍后重试")
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return Release{}, fmt.Errorf("还没有可用更新")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return Release{}, fmt.Errorf("下载失败，请检查网络后重试")
+		return Release{}, fmt.Errorf("更新服务暂时不可用（HTTP %d），请稍后重试", resp.StatusCode)
 	}
 
 	var decoded githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return Release{}, fmt.Errorf("更新失败：安装包格式不正确")
+		return Release{}, fmt.Errorf("更新说明格式不正确，请稍后重试")
 	}
 
 	versionText := strings.TrimPrefix(decoded.TagName, "v")
@@ -76,4 +87,15 @@ func fetchLatestRelease(client *http.Client, endpoint string) (Release, error) {
 		}
 	}
 	return Release{}, fmt.Errorf("更新失败：安装包格式不正确")
+}
+
+// The release asset is the primary source and does not consume GitHub's
+// shared anonymous API quota. The API remains available for older releases
+// without a manifest and when the asset download service is unavailable.
+func fetchReleaseWithFallback(client *http.Client, endpoint, fallback string) (Release, error) {
+	release, err := fetchLatestRelease(client, endpoint)
+	if err == nil || fallback == "" || fallback == endpoint {
+		return release, err
+	}
+	return fetchLatestRelease(client, fallback)
 }

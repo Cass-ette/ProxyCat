@@ -63,6 +63,7 @@ class StatusViewModel: ObservableObject {
     private let helper: HelperClient
     private let defaults: UserDefaults
     private let appVersion: String
+    private let releaseNotesOverride: String?
     private let wifiSSIDProvider: () -> String?
     private let campusPrompt: (String) -> Bool
     private var refreshTimer: Timer?
@@ -80,10 +81,12 @@ class StatusViewModel: ObservableObject {
     init(helper: HelperClient = .shared, defaults: UserDefaults = .standard,
          wifiSSIDProvider: @escaping () -> String? = {
              CWWiFiClient.shared().interfaces()?.compactMap { $0.ssid() }.first
-         }, campusPrompt: ((String) -> Bool)? = nil, currentVersion: String? = nil) {
+         }, campusPrompt: ((String) -> Bool)? = nil, currentVersion: String? = nil,
+         currentReleaseNotes: String? = nil) {
         self.helper = helper
         self.defaults = defaults
         self.appVersion = currentVersion ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知版本"
+        self.releaseNotesOverride = currentReleaseNotes
         self.wifiSSIDProvider = wifiSSIDProvider
         self.campusPrompt = campusPrompt ?? { ssid in
             let alert = NSAlert()
@@ -511,6 +514,12 @@ class StatusViewModel: ObservableObject {
             updateFailed = true
             lastError = "检查更新失败：\(error.localizedDescription)"
         }
+        if updateFailed {
+            // A failed remote check must not hide the changelog shipped with
+            // this app or imply that the installed version is up to date.
+            showingCurrentReleaseNotes = true
+            availableUpdateVersion = nil
+        }
     }
 
     func installUpdate() async {
@@ -551,6 +560,7 @@ class StatusViewModel: ObservableObject {
     }
 
     var currentReleaseNotes: String {
+        if let releaseNotesOverride { return releaseNotesOverride }
         guard let url = Bundle.main.url(forResource: "v\(currentAppVersion)", withExtension: "md", subdirectory: "releases"),
               let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
         return text

@@ -25,7 +25,7 @@ private final class Fixture {
         wifiSSIDProvider: { [weak self] in
             guard let self else { return nil }
             return self.has("campus-arrived") ? "Campus" : "Home"
-        }
+        }, currentVersion: "0.12.4", currentReleaseNotes: "## 修复\n- 离线更新日志"
     )
 
     init(coreRunning: Bool = true) throws {
@@ -390,8 +390,12 @@ struct ConnectionRecoveryTests {
         await fixture.viewModel.checkForUpdate()
         try expect(fixture.viewModel.updateStatus == "更新检查暂时不可用，请稍后重试" && fixture.viewModel.updateFailed,
                    "Keep structured check errors instead of generic command exit failures")
+        try expect(fixture.viewModel.showingCurrentReleaseNotes && fixture.viewModel.currentReleaseNotes.contains("离线更新日志") && fixture.viewModel.availableUpdateVersion == nil,
+                   "A failed check must show bundled current-version notes without offering an install")
         try fixture.remove("fail-check")
         await fixture.viewModel.checkForUpdate()
+        try expect(!fixture.viewModel.showingCurrentReleaseNotes && !fixture.viewModel.updateFailed && fixture.viewModel.updateReleaseNotes.contains("连接测试"),
+                   "A successful retry must return to the available release's notes")
         try fixture.set("new-release")
         await fixture.viewModel.installUpdate()
         try expect(fixture.viewModel.availableUpdateVersion == nil && fixture.viewModel.updateFailed && !fixture.viewModel.showRestartAlert,

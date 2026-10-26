@@ -32,6 +32,8 @@ The app is not yet Developer ID signed or notarized. If macOS blocks the first l
 
 You can also use **检查更新** in the app, install the available update, and restart when prompted. Starting with 0.12.1, the updater prefers the DMG and still accepts older installer ZIPs. Releases include a compatibility ZIP so earlier versions can upgrade through their existing updater, even when skipping releases. Use the DMG for new installations.
 
+Starting with 0.12.4, update checks use the release's `update.json` asset to avoid GitHub's shared anonymous API limit, with the API as a fallback. If both sources are unavailable, the update window still shows the installed version's bundled changelog and the failure reason. Older versions blocked by API limits can install the latest DMG manually.
+
 ## Campus Wi-Fi Protection
 
 Open **校园网保护** in the menu, allow Wi-Fi name access when prompted, and add the current Wi-Fi or enter its SSID manually. SSIDs are matched exactly, including case and spaces, and the list and policy are saved locally.

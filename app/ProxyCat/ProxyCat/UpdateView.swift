@@ -41,7 +41,7 @@ struct UpdateView: View {
                 }
                 .padding(28)
             }
-            if !viewModel.updateStatus.isEmpty && !isCurrent {
+            if !viewModel.updateStatus.isEmpty && (!isCurrent || viewModel.updateFailed) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         if viewModel.isInstallingUpdate { ProgressView().controlSize(.small) }
@@ -74,6 +74,11 @@ struct UpdateView: View {
                 .accessibilityHidden(true)
             Text(!isCurrent && viewModel.availableUpdateVersion != nil ? "发现新版本" : "更新日志")
                 .font(.system(size: 26, weight: .semibold))
+            if isCurrent && viewModel.updateFailed {
+                Text("当前版本更新日志 · 尚未确认是否有新版本")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+            }
             Text("v\(version)")
                 .font(.system(size: 15, weight: .semibold))
                 .padding(.horizontal, 16)
