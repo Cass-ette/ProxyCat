@@ -226,7 +226,7 @@ struct MenuContentView: View {
 
             if viewModel.systemProxyEnabled {
                 HStack {
-                    Text("连接测试:")
+                    Text(viewModel.currentMode == "direct" ? "直连测试:" : "连接测试:")
                         .foregroundColor(.secondary)
                     if viewModel.isToggleTesting {
                         HStack(spacing: 6) {
@@ -675,7 +675,9 @@ struct MenuContentView: View {
 
     private var toggleFailureBanner: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("连接测试暂未通过。切换网络后请稍候重试，也可更换节点或运行诊断。")
+            Text(viewModel.currentMode == "direct"
+                 ? "直连模式使用当前网络访问测试地址。测试未通过，请检查当前网络能否访问该地址。"
+                 : "连接测试暂未通过。切换网络后请稍候重试，也可更换节点或运行诊断。")
                 .font(.system(size: 12))
                 .foregroundColor(.red)
                 .fixedSize(horizontal: false, vertical: true)
