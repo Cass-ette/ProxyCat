@@ -7,6 +7,7 @@ ProxyCat ships a DMG for drag-to-Applications installation and in-app updates. D
 Prerequisites: macOS, Go 1.21+, Xcode 13+, Python 3.10+ and GitHub push access. The DMG tools are pinned in `scripts/dmg/requirements.txt` and installed into an isolated environment under the ignored build directory. The first DMG build needs network access to download them.
 
 1. Update `CFBundleShortVersionString` in `app/ProxyCat/ProxyCat/Info.plist` and both `MARKETING_VERSION` values in the Xcode project.
+   Add user-facing Markdown notes to `docs/releases/vX.Y.Z.md`, using headings such as `新功能`, `修复` and `改进`. The same file is bundled for offline changelog viewing and published as the GitHub Release body. Check for missing version notes before packaging.
 2. Run the regression checks:
    ```bash
    bash scripts/test-shutdown.sh

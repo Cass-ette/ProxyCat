@@ -10,6 +10,7 @@ class MenuBarController: NSObject, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var viewModel: StatusViewModel!
     private var menuWindow: KeyEventWindow?
+    private var updateWindow: NSWindow?
 
     override init() {
         super.init()
@@ -50,7 +51,9 @@ class MenuBarController: NSObject, NSWindowDelegate {
         let windowWidth: CGFloat = 320
         let windowHeight: CGFloat = 640
         let hostingController = NSHostingController(
-            rootView: MenuContentView(viewModel: viewModel)
+            rootView: MenuContentView(viewModel: viewModel, onShowUpdates: { [weak self] check in
+                self?.showUpdates(check: check)
+            })
                 .frame(width: windowWidth)
         )
 
@@ -92,6 +95,29 @@ class MenuBarController: NSObject, NSWindowDelegate {
         menuWindow = nil
 
         setIcon("cat", accessibilityDescription: "ProxyCat")
+    }
+
+    private func showUpdates(check: Bool) {
+        hideMenu()
+        if !viewModel.isInstallingUpdate && !viewModel.showRestartAlert {
+            viewModel.showingCurrentReleaseNotes = !check
+        }
+        if updateWindow == nil {
+            let controller = NSHostingController(rootView: UpdateView(viewModel: viewModel, onClose: { [weak self] in
+                self?.updateWindow?.orderOut(nil)
+            }))
+            let window = NSWindow(contentViewController: controller)
+            window.title = "ProxyCat · 更新日志"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 600, height: 680))
+            window.contentMinSize = NSSize(width: 520, height: 520)
+            window.center()
+            updateWindow = window
+        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        updateWindow?.makeKeyAndOrderFront(nil)
+        if check { Task { await viewModel.checkForUpdate() } }
     }
 
     func windowDidResignKey(_ notification: Notification) {

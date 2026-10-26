@@ -41,13 +41,25 @@ func TestRunnerReportsAlreadyLatestJSON(t *testing.T) {
 
 func TestRunnerCheckOnlyReportsAvailableUpdate(t *testing.T) {
 	var out bytes.Buffer
-	runner := Runner{CurrentVersion: "0.1.0", Latest: Release{Version: "0.2.0"}, CheckOnly: true}
+	runner := Runner{CurrentVersion: "0.1.0", Latest: Release{Version: "0.2.0", Notes: "## 修复\n- 修复连接", URL: "https://github.com/Cass-ette/ProxyCat/releases/tag/v0.2.0", PublishedAt: "2026-10-26T08:00:00Z"}, CheckOnly: true}
 	code := runner.Run(&out, true)
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
 	}
 	if !strings.Contains(out.String(), `"stage":"done"`) || !strings.Contains(out.String(), "发现新版本 0.2.0") {
 		t.Fatalf("json output = %q", out.String())
+	}
+	var event Event
+	if err := json.Unmarshal(out.Bytes(), &event); err != nil || event.ReleaseNotes != runner.Latest.Notes || event.ReleaseURL != runner.Latest.URL || event.ReleaseVersion != "0.2.0" || event.PublishedAt != runner.Latest.PublishedAt {
+		t.Fatalf("release details lost: %+v, error %v", event, err)
+	}
+}
+
+func TestRunnerRejectsUnreviewedVersionBeforeDownload(t *testing.T) {
+	var out bytes.Buffer
+	runner := Runner{CurrentVersion: "0.1.0", ExpectedVersion: "0.2.0", Latest: Release{Version: "0.3.0"}}
+	if code := runner.Run(&out, true); code == 0 || !strings.Contains(out.String(), "重新检查更新") || strings.Contains(out.String(), `"stage":"downloading"`) {
+		t.Fatalf("unreviewed version must not be downloaded: %s", &out)
 	}
 }
 

@@ -13,11 +13,17 @@ type Release struct {
 	SHA256URL    string
 	Size         int64
 	Format       string
+	Notes        string
+	URL          string
+	PublishedAt  string
 }
 
 type githubRelease struct {
-	TagName string `json:"tag_name"`
-	Assets  []struct {
+	TagName     string `json:"tag_name"`
+	Body        string `json:"body"`
+	URL         string `json:"html_url"`
+	PublishedAt string `json:"published_at"`
+	Assets      []struct {
 		Name string `json:"name"`
 		URL  string `json:"browser_download_url"`
 		Size int64  `json:"size"`
@@ -54,7 +60,7 @@ func fetchLatestRelease(client *http.Client, endpoint string) (Release, error) {
 	// for releases published before DMG updates were available, and never mix
 	// an installer's checksum with a different format or version.
 	for _, candidate := range []struct{ suffix, format string }{{".dmg", "dmg"}, {"-installer.zip", "zip"}} {
-		release := Release{Version: versionText, Format: candidate.format}
+		release := Release{Version: versionText, Format: candidate.format, Notes: decoded.Body, URL: decoded.URL, PublishedAt: decoded.PublishedAt}
 		name := "ProxyCat-" + versionText + candidate.suffix
 		for _, asset := range decoded.Assets {
 			if asset.Name == name {

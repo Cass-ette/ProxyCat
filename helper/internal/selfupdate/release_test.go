@@ -46,6 +46,9 @@ func TestFetchLatestReleaseFindsStrictInstallerAndSHA(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"tag_name": "v0.2.0",
+			"body": "## 修复\n- 连接测试",
+			"html_url": "https://github.com/Cass-ette/ProxyCat/releases/tag/v0.2.0",
+			"published_at": "2026-10-26T08:00:00Z",
 			"assets": [
 				{"name":"ProxyCat-dev-installer.zip","browser_download_url":"https://example.com/dev.zip","size":1},
 				{"name":"ProxyCat-0.2.0-installer.zip","browser_download_url":"https://example.com/app.zip","size":100},
@@ -61,6 +64,9 @@ func TestFetchLatestReleaseFindsStrictInstallerAndSHA(t *testing.T) {
 	}
 	if release.Version != "0.2.0" {
 		t.Fatalf("version = %q", release.Version)
+	}
+	if release.Notes != "## 修复\n- 连接测试" || release.URL != "https://github.com/Cass-ette/ProxyCat/releases/tag/v0.2.0" || release.PublishedAt != "2026-10-26T08:00:00Z" {
+		t.Fatalf("release notes metadata lost: %+v", release)
 	}
 	if release.InstallerURL != "https://example.com/app.zip" {
 		t.Fatalf("installer URL = %q", release.InstallerURL)

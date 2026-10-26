@@ -6,3 +6,4 @@ task_plan.md
 app/ProxyCat/build/
 DerivedData/
 dist/
+/output/imagegen/

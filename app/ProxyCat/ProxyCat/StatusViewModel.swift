@@ -31,6 +31,11 @@ class StatusViewModel: ObservableObject {
     @Published var isCheckingForUpdate = false
     @Published var isInstallingUpdate = false
     @Published var showRestartAlert = false
+    @Published var updateReleaseVersion: String?
+    @Published var updateReleaseNotes = ""
+    @Published var updateReleaseURL: String?
+    @Published var updatePublishedAt: String?
+    @Published var showingCurrentReleaseNotes = true
     @Published var profiles: [Profile] = []
     @Published var activeProfileID: String?
     @Published var updateFailed = false
@@ -57,6 +62,7 @@ class StatusViewModel: ObservableObject {
 
     private let helper: HelperClient
     private let defaults: UserDefaults
+    private let appVersion: String
     private let wifiSSIDProvider: () -> String?
     private let campusPrompt: (String) -> Bool
     private var refreshTimer: Timer?
@@ -74,9 +80,10 @@ class StatusViewModel: ObservableObject {
     init(helper: HelperClient = .shared, defaults: UserDefaults = .standard,
          wifiSSIDProvider: @escaping () -> String? = {
              CWWiFiClient.shared().interfaces()?.compactMap { $0.ssid() }.first
-         }, campusPrompt: ((String) -> Bool)? = nil) {
+         }, campusPrompt: ((String) -> Bool)? = nil, currentVersion: String? = nil) {
         self.helper = helper
         self.defaults = defaults
+        self.appVersion = currentVersion ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知版本"
         self.wifiSSIDProvider = wifiSSIDProvider
         self.campusPrompt = campusPrompt ?? { ssid in
             let alert = NSAlert()
@@ -474,10 +481,17 @@ class StatusViewModel: ObservableObject {
     }
 
     func checkForUpdate() async {
+        guard !isCheckingForUpdate, !isInstallingUpdate, !showRestartAlert else { return }
+        showingCurrentReleaseNotes = false
         isCheckingForUpdate = true
+        updateFailed = false
         updateStatus = "正在检查更新..."
         updateProgress = nil
         availableUpdateVersion = nil
+        updateReleaseVersion = nil
+        updateReleaseNotes = ""
+        updateReleaseURL = nil
+        updatePublishedAt = nil
         defer { isCheckingForUpdate = false }
 
         let result = await helper.checkForUpdate()
@@ -486,14 +500,23 @@ class StatusViewModel: ObservableObject {
             updateStatus = event.message
             updateProgress = event.progress
             availableUpdateVersion = event.newVersion
+            updateReleaseVersion = event.releaseVersion ?? event.newVersion
+            updateReleaseNotes = event.releaseNotes ?? ""
+            updateReleaseURL = event.releaseURL
+            updatePublishedAt = event.publishedAt
+            updateFailed = event.stage == "error"
             lastError = event.stage == "error" ? event.message : nil
         case .failure(let error):
-            updateStatus = ""
+            updateStatus = "检查更新失败：\(error.localizedDescription)"
+            updateFailed = true
             lastError = "检查更新失败：\(error.localizedDescription)"
         }
     }
 
     func installUpdate() async {
+        guard !isCheckingForUpdate, !isInstallingUpdate, !showRestartAlert,
+              let version = availableUpdateVersion else { return }
+        showingCurrentReleaseNotes = false
         isInstallingUpdate = true
         updateFailed = false
         updateStatus = "正在准备更新..."
@@ -501,18 +524,36 @@ class StatusViewModel: ObservableObject {
         lastError = nil
         defer { isInstallingUpdate = false }
 
-        let stream = await helper.installUpdate()
+        let stream = await helper.installUpdate(expectedVersion: version)
+        var finished = false
         for await event in stream {
             updateStatus = event.message
             updateProgress = event.progress
             availableUpdateVersion = event.stage == "done" ? nil : (event.newVersion ?? availableUpdateVersion)
             if event.stage == "done" {
-                showRestartAlert = true
+                finished = true
+                showRestartAlert = event.progress == 100
             }
             if event.stage == "error" {
+                finished = true
                 updateFailed = true
+                if event.recheck == true { availableUpdateVersion = nil }
             }
         }
+        if !finished {
+            updateFailed = true
+            updateStatus = "更新已中止，可以重试。"
+        }
+    }
+
+    var currentAppVersion: String {
+        appVersion
+    }
+
+    var currentReleaseNotes: String {
+        guard let url = Bundle.main.url(forResource: "v\(currentAppVersion)", withExtension: "md", subdirectory: "releases"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        return text
     }
 
     func cancelUpdate() async {

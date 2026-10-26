@@ -338,3 +338,17 @@ func TestFailedConnectionResultOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateClientUsesSystemProxy(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "scutil"), []byte("#!/bin/sh\nprintf '<dictionary> {\\n HTTPSProxy : 127.0.0.1\\n HTTPSPort : 17890\\n HTTPSEnable : 1\\n}\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	client := updateHTTPClient()
+	request, _ := http.NewRequest("GET", "https://api.github.com", nil)
+	proxy, err := client.Transport.(*http.Transport).Proxy(request)
+	if err != nil || proxy == nil || proxy.String() != "http://127.0.0.1:17890" || client.Timeout == 0 {
+		t.Fatalf("update client must honor enabled macOS HTTPS proxy and set timeout: proxy=%v err=%v", proxy, err)
+	}
+}

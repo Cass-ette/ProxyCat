@@ -1,0 +1,6 @@
+Use case: logo-brand
+Asset type: a production-ready macOS application icon for ProxyCat, a small networking utility.
+Primary request: an exceptionally simple, tasteful, modern Mac app icon. Quiet, minimal, confident. A clean black cat mark on a warm off-white macOS squircle tile. The cat is an abstract compact silhouette with two subtle pointed ears and perhaps two tiny negative-space eyes, no whiskers or busy detail. Let refined proportions do the work. It should read instantly at 32 pixels.
+Composition: one single centered icon in a square 1024x1024 canvas; standard macOS icon silhouette with generous equal exterior padding of around 100 pixels. Front-facing orthographic flat composition. Entire icon visible. Exterior background pure white so it can be removed separately. Center cat symbol occupies around half the tile width.
+Palette: only charcoal black, warm ivory and neutral gray. Subtle tactile depth on the off-white tile and a very soft contact shadow, otherwise flat graphic mark.
+Avoid: blue, purple, violet, colored gradients, rainbow, neon, glowing edges, chrome, inflated 3D mascot, photoreal fur, cute cartoon face, network nodes, cables, whisker circuits, letters, text, badges, tiny decorative details, multiple icons, mockup scenes.

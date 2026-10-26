@@ -10,20 +10,26 @@ import (
 )
 
 type Runner struct {
-	CurrentVersion string
-	Latest         Release
-	CheckOnly      bool
-	Client         *http.Client
-	Endpoint       string
-	AppPath        string
-	BackupDir      string
+	CurrentVersion  string
+	ExpectedVersion string
+	Latest          Release
+	CheckOnly       bool
+	Client          *http.Client
+	Endpoint        string
+	AppPath         string
+	BackupDir       string
 }
 
 type Event struct {
-	Stage      string `json:"stage"`
-	Message    string `json:"message"`
-	Progress   int    `json:"progress,omitempty"`
-	NewVersion string `json:"newVersion,omitempty"`
+	Stage          string `json:"stage"`
+	Message        string `json:"message"`
+	Progress       int    `json:"progress,omitempty"`
+	NewVersion     string `json:"newVersion,omitempty"`
+	ReleaseVersion string `json:"releaseVersion,omitempty"`
+	ReleaseNotes   string `json:"releaseNotes,omitempty"`
+	ReleaseURL     string `json:"releaseURL,omitempty"`
+	PublishedAt    string `json:"publishedAt,omitempty"`
+	Recheck        bool   `json:"recheck,omitempty"`
 }
 
 func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
@@ -55,12 +61,16 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 		return 1
 	}
 	if current.compare(latestVer) >= 0 {
-		emit(stdout, jsonOutput, Event{Stage: "done", Message: "已经是最新版"})
+		emit(stdout, jsonOutput, Event{Stage: "done", Message: "已经是最新版", ReleaseVersion: latest.Version, ReleaseNotes: latest.Notes, ReleaseURL: latest.URL, PublishedAt: latest.PublishedAt})
 		return 0
 	}
 	if r.CheckOnly {
-		emit(stdout, jsonOutput, Event{Stage: "done", Message: "发现新版本 " + latest.Version, NewVersion: latest.Version})
+		emit(stdout, jsonOutput, Event{Stage: "done", Message: "发现新版本 " + latest.Version, NewVersion: latest.Version, ReleaseVersion: latest.Version, ReleaseNotes: latest.Notes, ReleaseURL: latest.URL, PublishedAt: latest.PublishedAt})
 		return 0
+	}
+	if r.ExpectedVersion != "" && r.ExpectedVersion != latest.Version {
+		emit(stdout, jsonOutput, Event{Stage: "error", Message: "可用版本已变化，请重新检查更新并确认更新内容后再安装", Recheck: true})
+		return 1
 	}
 
 	if r.Client == nil || r.AppPath == "" || r.BackupDir == "" {

@@ -113,7 +113,7 @@ actor HelperClient {
         return nil
     }
 
-    private func runCommand(_ args: [String], duringShutdown: Bool = false, duringCampusDisconnect: Bool = false) async -> Result<Data, HelperError> {
+    private func runCommand(_ args: [String], duringShutdown: Bool = false, duringCampusDisconnect: Bool = false, allowFailureOutput: Bool = false) async -> Result<Data, HelperError> {
         guard shutdownTask == nil || duringShutdown else {
             return .failure(.shuttingDown)
         }
@@ -175,7 +175,7 @@ actor HelperClient {
                         let stderr = String(decoding: errorData, as: UTF8.self)
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         let result: Result<Data, HelperError>
-                        if process.terminationStatus == 0 {
+                        if process.terminationStatus == 0 || (allowFailureOutput && !data.isEmpty) {
                             result = .success(data)
                         } else {
                             let commandName = args.joined(separator: " ")
@@ -338,7 +338,7 @@ actor HelperClient {
     }
 
     func checkForUpdate() async -> Result<UpdateEvent, HelperError> {
-        let result = await runCommand(["self-update", "--check-only", "--json"])
+        let result = await runCommand(["self-update", "--check-only", "--json"], allowFailureOutput: true)
         return result.flatMap { data in
             decodeLastUpdateEvent(from: data)
         }
@@ -362,7 +362,7 @@ actor HelperClient {
         return .success(event)
     }
 
-    func installUpdate() -> AsyncStream<UpdateEvent> {
+    func installUpdate(expectedVersion: String? = nil) -> AsyncStream<UpdateEvent> {
         AsyncStream { continuation in
             Task {
                 guard shutdownTask == nil else {
@@ -378,6 +378,9 @@ actor HelperClient {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = ["self-update", "--json"]
+                if let version = expectedVersion {
+                    process.arguments?.append(contentsOf: ["--expected-version", version])
+                }
                 let inputHandle: FileHandle
                 do {
                     inputHandle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))

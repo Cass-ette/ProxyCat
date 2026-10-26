@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Cass-ette/ProxyCat/helper/internal/config"
@@ -182,11 +185,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	case "test":
 		return runTestJSON(stdout, stderr, jsonOutput)
 
-	case "self-update":
-		return runSelfUpdate(stdout, stderr, jsonOutput, containsArg(args[1:], "--check-only"))
-
-	case "update":
-		return runSelfUpdate(stdout, stderr, jsonOutput, containsArg(args[1:], "--check-only"))
+	case "self-update", "update":
+		expectedVersion := ""
+		for i, arg := range args[1:] {
+			if arg == "--expected-version" {
+				if i+2 >= len(args) || strings.HasPrefix(args[i+2], "--") {
+					fmt.Fprintln(stderr, "--expected-version requires a version")
+					return 2
+				}
+				expectedVersion = args[i+2]
+			}
+		}
+		return runSelfUpdate(stdout, stderr, jsonOutput, containsArg(args[1:], "--check-only"), expectedVersion)
 
 	case "select":
 		if len(args) < 3 {
@@ -236,7 +246,17 @@ func containsArg(args []string, target string) bool {
 	return false
 }
 
-func runSelfUpdate(stdout io.Writer, stderr io.Writer, jsonOutput bool, checkOnly bool) int {
+// Command-line HTTP clients do not inherit macOS system proxy settings.
+// Honor the enabled proxy so checking updates uses the same route as the app.
+func updateHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if status, err := sysproxy.GetStatus(); err == nil && status.HTTPSEnabled && status.HTTPSHost != "" && status.HTTPSPort > 0 {
+		transport.Proxy = http.ProxyURL(&url.URL{Scheme: "http", Host: net.JoinHostPort(status.HTTPSHost, strconv.Itoa(status.HTTPSPort))})
+	}
+	return &http.Client{Transport: transport, Timeout: 90 * time.Second}
+}
+
+func runSelfUpdate(stdout io.Writer, stderr io.Writer, jsonOutput bool, checkOnly bool, expectedVersion string) int {
 	executable, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(stderr, "resolve executable: %v\n", err)
@@ -255,12 +275,13 @@ func runSelfUpdate(stdout io.Writer, stderr io.Writer, jsonOutput bool, checkOnl
 	}
 
 	runner := selfupdate.Runner{
-		CurrentVersion: currentVersion,
-		CheckOnly:      checkOnly,
-		Client:         &http.Client{},
-		Endpoint:       "https://api.github.com/repos/Cass-ette/ProxyCat/releases/latest",
-		AppPath:        appPath,
-		BackupDir:      filepath.Join(filepath.Dir(appPath), "ProxyCat-Backups"),
+		CurrentVersion:  currentVersion,
+		ExpectedVersion: expectedVersion,
+		CheckOnly:       checkOnly,
+		Client:          updateHTTPClient(),
+		Endpoint:        "https://api.github.com/repos/Cass-ette/ProxyCat/releases/latest",
+		AppPath:         appPath,
+		BackupDir:       filepath.Join(filepath.Dir(appPath), "ProxyCat-Backups"),
 	}
 	return runner.Run(stdout, jsonOutput)
 }

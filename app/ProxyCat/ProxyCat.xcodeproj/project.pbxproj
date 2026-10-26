@@ -16,6 +16,8 @@
 		A1000010 /* proxyctl in Resources */ = {isa = PBXBuildFile; fileRef = A100000F /* proxyctl */; };
 		A1000023 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000022 /* Assets.xcassets */; };
 		A1000025 /* CoreWLAN.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000024 /* CoreWLAN.framework */; };
+		A1000027 /* UpdateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000026 /* UpdateView.swift */; };
+		A1000029 /* releases in Resources */ = {isa = PBXBuildFile; fileRef = A1000028 /* releases */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -31,6 +33,8 @@
 		A100000F /* proxyctl */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; name = proxyctl; path = ProxyCat/Resources/proxyctl; sourceTree = "<group>"; };
 		A1000022 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A1000024 /* CoreWLAN.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreWLAN.framework; path = System/Library/Frameworks/CoreWLAN.framework; sourceTree = SDKROOT; };
+		A1000026 /* UpdateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateView.swift; sourceTree = "<group>"; };
+		A1000028 /* releases */ = {isa = PBXFileReference; lastKnownFileType = folder; name = releases; path = ../../docs/releases; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -54,6 +58,8 @@
 				A1000006 /* StatusViewModel.swift */,
 				A1000008 /* MenuContentView.swift */,
 				A100000A /* Models.swift */,
+				A1000026 /* UpdateView.swift */,
+				A1000028 /* releases */,
 				A1000022 /* Assets.xcassets */,
 				A100000C /* Info.plist */,
 				A100000D /* ProxyCat.entitlements */,
@@ -128,6 +134,7 @@
 			files = (
 				A1000023 /* Assets.xcassets in Resources */,
 				A1000010 /* proxyctl in Resources */,
+				A1000029 /* releases in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -144,6 +151,7 @@
 				A1000007 /* StatusViewModel.swift in Sources */,
 				A1000009 /* MenuContentView.swift in Sources */,
 				A100000B /* Models.swift in Sources */,
+				A1000027 /* UpdateView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

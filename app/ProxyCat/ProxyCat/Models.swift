@@ -75,6 +75,46 @@ struct UpdateEvent: Codable {
     let message: String
     let progress: Int?
     let newVersion: String?
+    var releaseVersion: String? = nil
+    var releaseNotes: String? = nil
+    var releaseURL: String? = nil
+    var publishedAt: String? = nil
+    var recheck: Bool? = nil
+}
+
+struct ReleaseNotesSection: Identifiable {
+    let id: Int
+    let title: String
+    let items: [String]
+
+    static func parse(_ markdown: String) -> [ReleaseNotesSection] {
+        var sections: [ReleaseNotesSection] = []
+        var title = "更新内容"
+        var items: [String] = []
+        func flush() {
+            if !items.isEmpty {
+                sections.append(ReleaseNotesSection(id: sections.count, title: title, items: items))
+                items = []
+            }
+        }
+        for raw in markdown.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#") {
+                flush()
+                title = String(line.drop(while: { $0 == "#" || $0 == " " }))
+            } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                items.append(String(line.dropFirst(2)))
+            } else if !line.isEmpty {
+                if raw.hasPrefix("  "), let last = items.popLast() {
+                    items.append(last + " " + line)
+                } else {
+                    items.append(line)
+                }
+            }
+        }
+        flush()
+        return sections
+    }
 }
 
 struct Profile: Codable, Identifiable {

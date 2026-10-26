@@ -117,6 +117,25 @@ private final class Fixture {
             'proxy-delay Proxy') echo '{"delay":43}' ;;
             'proxy-delay GLOBAL') echo '{"delay":44}' ;;
             'proxy-delay DIRECT') echo '{"delay":45}' ;;
+            'self-update --check-only')
+                if [ -f "$fixture_dir/fail-check" ]; then
+                    echo '{"stage":"error","message":"更新检查暂时不可用，请稍后重试"}'
+                    exit 1
+                fi
+                printf '%s\n' '{"stage":"done","message":"发现新版本 0.13.0","newVersion":"0.13.0","releaseVersion":"0.13.0","releaseNotes":"## 新功能\n- **更新日志**：查看说明后安装\n## 修复\n- 连接测试","releaseURL":"https://github.com/Cass-ette/ProxyCat/releases/tag/v0.13.0","publishedAt":"2026-10-26T08:00:00Z"}'
+                ;;
+            'self-update --json')
+                if [ "$3" != '--expected-version' ] || [ "$4" != '0.13.0' ]; then exit 9; fi
+                if [ -f "$fixture_dir/new-release" ]; then
+                    echo '{"stage":"error","message":"可用版本已变化，请重新检查更新","recheck":true}'
+                    exit 1
+                fi
+                if [ -f "$fixture_dir/truncated-update" ]; then
+                    echo '{"stage":"downloading","message":"下载中","progress":20}'
+                    exit 7
+                fi
+                echo '{"stage":"done","message":"更新完成 0.13.0","newVersion":"0.13.0","progress":100}'
+                ;;
             *) echo 'unexpected command' >&2; exit 9 ;;
         esac
         """#.write(to: executable, atomically: true, encoding: .utf8)
@@ -163,7 +182,12 @@ struct ConnectionRecoveryTests {
         try await repeatedEnableDoesNotStartTwice()
         try await selectionAndDelayFollowMode()
         try await failedModeChangeKeepsSelection()
-        print("Passed 11 connection recovery and mode regression tests")
+        try await reviewBeforeInstallingUpdate()
+        try await interruptedUpdateIsRetryable()
+        try await updateFailuresRemainReviewable()
+        try legacyUpdateEventsStillDecode()
+        try releaseNotesKeepSectionsAndContent()
+        print("Passed 16 connection, mode and update flow regression tests")
     }
 
     @MainActor
@@ -330,5 +354,59 @@ struct ConnectionRecoveryTests {
                    "A failed global preparation must leave the displayed rule route intact")
         try expect(fixture.viewModel.lastError?.contains("global selection unavailable") == true && !fixture.viewModel.isChangingMode,
                    "Report failure and allow another mode change")
+    }
+
+    @MainActor
+    static func reviewBeforeInstallingUpdate() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.installUpdate()
+        try expect(fixture.commands.isEmpty, "Never install without a checked version")
+        await fixture.viewModel.checkForUpdate()
+        try expect(fixture.viewModel.availableUpdateVersion == "0.13.0" && fixture.viewModel.updateReleaseNotes.contains("更新日志") && fixture.viewModel.updatePublishedAt != nil,
+                   "Checking must preserve the notes, version and publication date for review")
+        try expect(fixture.commands == ["self-update --check-only --json"] && !fixture.viewModel.showRestartAlert,
+                   "Checking must not download or install")
+        await fixture.viewModel.installUpdate()
+        try expect(fixture.commands.last == "self-update --json --expected-version 0.13.0" && fixture.viewModel.showRestartAlert,
+                   "Install the reviewed version and keep restart available in the window")
+        try expect(fixture.viewModel.availableUpdateVersion == nil && !fixture.viewModel.isInstallingUpdate,
+                   "Successful installation must not offer another install")
+    }
+
+    @MainActor
+    static func interruptedUpdateIsRetryable() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.checkForUpdate()
+        try fixture.set("truncated-update")
+        await fixture.viewModel.installUpdate()
+        try expect(fixture.viewModel.updateFailed && !fixture.viewModel.showRestartAlert && fixture.viewModel.availableUpdateVersion == "0.13.0",
+                   "An interrupted stream must allow a retry and must not show success")
+    }
+
+    @MainActor
+    static func updateFailuresRemainReviewable() async throws {
+        let fixture = try Fixture()
+        try fixture.set("fail-check")
+        await fixture.viewModel.checkForUpdate()
+        try expect(fixture.viewModel.updateStatus == "更新检查暂时不可用，请稍后重试" && fixture.viewModel.updateFailed,
+                   "Keep structured check errors instead of generic command exit failures")
+        try fixture.remove("fail-check")
+        await fixture.viewModel.checkForUpdate()
+        try fixture.set("new-release")
+        await fixture.viewModel.installUpdate()
+        try expect(fixture.viewModel.availableUpdateVersion == nil && fixture.viewModel.updateFailed && !fixture.viewModel.showRestartAlert,
+                   "A changed release must require a new check, not offer an unreviewed install")
+    }
+
+    static func legacyUpdateEventsStillDecode() throws {
+        let event = try JSONDecoder().decode(UpdateEvent.self, from: Data(#"{"stage":"done","message":"已经是最新版"}"#.utf8))
+        try expect(event.releaseNotes == nil && event.releaseVersion == nil, "Old helper responses remain compatible")
+    }
+
+    static func releaseNotesKeepSectionsAndContent() throws {
+        let sections = ReleaseNotesSection.parse("## 新功能\n- **日志**：说明\n  补充内容\n## 修复\n- 连接测试\n\n## 安装\n打开 DMG。")
+        try expect(sections.map(\.title) == ["新功能", "修复", "安装"] && sections[0].items == ["**日志**：说明 补充内容"] && sections[2].items == ["打开 DMG。"],
+                   "Preserve headings, inline formatting and continuation lines")
+        try expect(ReleaseNotesSection.parse("").isEmpty, "Missing notes must use the empty state")
     }
 }

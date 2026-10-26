@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MenuContentView: View {
     @ObservedObject var viewModel: StatusViewModel
+    let onShowUpdates: (Bool) -> Void
     @State private var subscriptionURL: String = ""
     @State private var isBootstrapping: Bool = false
     @State private var campusSSIDInput = ""
@@ -73,19 +74,6 @@ struct MenuContentView: View {
         .shadow(radius: 4)
         .frame(width: 320)
         .frame(maxHeight: 640)
-        .onChange(of: viewModel.showRestartAlert) { show in
-            if show {
-                viewModel.showRestartAlert = false
-                let alert = NSAlert()
-                alert.messageText = "更新完成"
-                alert.informativeText = "需要重启 ProxyCat 才能使用新版本。"
-                alert.addButton(withTitle: "重启")
-                alert.addButton(withTitle: "稍后")
-                if alert.runModal() == .alertFirstButtonReturn {
-                    viewModel.restartApp()
-                }
-            }
-        }
     }
 
     private var headerSection: some View {
@@ -754,23 +742,18 @@ struct MenuContentView: View {
                 .padding(.top, 8)
 
             MenuButton(viewModel.isCheckingForUpdate ? "检查中..." : "检查更新", icon: "arrow.down.circle") {
-                Task { await viewModel.checkForUpdate() }
+                onShowUpdates(true)
             }
             .disabled(viewModel.isCheckingForUpdate || viewModel.isInstallingUpdate)
 
-            if viewModel.isInstallingUpdate {
-                MenuButton("取消更新", icon: "xmark.circle") {
-                    Task { await viewModel.cancelUpdate() }
+            MenuButton("更新日志", icon: "clock.arrow.circlepath") {
+                onShowUpdates(false)
+            }
+
+            if viewModel.availableUpdateVersion != nil || viewModel.isInstallingUpdate || viewModel.showRestartAlert {
+                MenuButton(viewModel.showRestartAlert ? "更新完成 · 查看详情" : "查看更新详情", icon: "doc.text") {
+                    onShowUpdates(true)
                 }
-            } else if viewModel.updateFailed {
-                MenuButton("重试更新", icon: "arrow.clockwise") {
-                    Task { await viewModel.installUpdate() }
-                }
-            } else {
-                MenuButton(viewModel.isInstallingUpdate ? "更新中..." : "安装更新", icon: "square.and.arrow.down") {
-                    Task { await viewModel.installUpdate() }
-                }
-                .disabled(viewModel.availableUpdateVersion == nil)
             }
 
             if !viewModel.updateStatus.isEmpty {
