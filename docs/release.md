@@ -6,14 +6,17 @@ ProxyCat ships a DMG for drag-to-Applications installation and in-app updates. D
 
 Prerequisites: macOS, Go 1.21+, Xcode 13+, Python 3.10+ and GitHub push access. The DMG tools are pinned in `scripts/dmg/requirements.txt` and installed into an isolated environment under the ignored build directory. The first DMG build needs network access to download them.
 
-1. Update `CFBundleShortVersionString` in `app/ProxyCat/ProxyCat/Info.plist` and both `MARKETING_VERSION` values in the Xcode project.
+1. Follow the [versioning policy](versioning.md): run `python3 scripts/version.py bump patch` for fixes, `bump minor` for new features, or `bump major` for the first stable version or subsequent breaking changes. The script updates the single version source in `Info.plist` and increments the internal build number. Do not add version overrides to the Xcode project.
    Add user-facing Markdown notes to `docs/releases/vX.Y.Z.md`, using headings such as `新功能`, `修复` and `改进`. The same file is bundled for offline changelog viewing and published as the GitHub Release body. Check for missing version notes before packaging.
 2. Run the regression checks:
    ```bash
+   python3 scripts/version.py check
+   python3 scripts/test-version.py
    bash scripts/test-shutdown.sh
    bash scripts/test-campus-network.sh
    bash scripts/test-connection-recovery.sh
    bash scripts/package-unsigned_test.sh
+   python3 scripts/test-update-manifest.py
    ```
 3. Build the universal app and all distribution files:
    ```bash
@@ -30,8 +33,8 @@ Prerequisites: macOS, Go 1.21+, Xcode 13+, Python 3.10+ and GitHub push access. 
    bash scripts/test-dmg.sh dist/ProxyCat-X.Y.Z.dmg
    ```
    This checks the image checksum, Applications link, Finder layout files, app version, Intel/Apple Silicon binaries and code signatures, then unmounts the image. It does not install or launch the app.
-5. Commit the source changes, push, and wait for GitHub Actions to pass. Push a `vX.Y.Z` tag at the tested commit. The release workflow builds and verifies the app and DMG, then publishes the DMG and its checksum to GitHub. It also publishes the installer ZIP and checksum so versions up to 0.12.0 can still update, even when skipping releases. The plain app ZIP remains a local artifact; new installations should use the DMG.
-6. Verify the published asset checksums match the local files and that the release points at the intended tag.
+5. Commit the source changes, push, and wait for GitHub Actions to pass. Run `python3 scripts/version.py check --tag vX.Y.Z`, then push that tag at the tested commit. The release workflow rejects mismatched or older tags, builds and verifies the app and DMG, then publishes the DMG and its checksum to GitHub. It also publishes the installer ZIP and checksum so versions up to 0.12.0 can still update, even when skipping releases. The plain app ZIP remains a local artifact; new installations should use the DMG.
+6. Verify the published asset checksums against the release job's digests and that the release points at the intended tag. The workflow publishes `update.json` with the same version, download URLs and release notes. Verify the public `releases/latest/download/update.json` URL and in-app check. Let the user install from the app to validate the real update flow.
 
 If a release job stops while uploading, run the Release workflow manually from the main branch with the existing tag. It resumes a draft by its release ID, replaces its incomplete assets, verifies all uploaded checksums and only then publishes it. It refuses to overwrite an already published release.
 

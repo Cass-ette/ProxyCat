@@ -11,11 +11,15 @@ class MenuBarController: NSObject, NSWindowDelegate {
     private var viewModel: StatusViewModel!
     private var menuWindow: KeyEventWindow?
     private var updateWindow: NSWindow?
+    private var statusObserver: MenuBarStatusObserver?
 
     override init() {
         super.init()
         setupStatusItem()
         viewModel = StatusViewModel()
+        statusObserver = MenuBarStatusObserver(viewModel: viewModel) { [weak self] state in
+            self?.updateIcon(state)
+        }
         viewModel.startAutoRefresh()
     }
 
@@ -35,7 +39,7 @@ class MenuBarController: NSObject, NSWindowDelegate {
             button.target = self
             button.action = #selector(toggleMenu)
             button.imagePosition = .imageLeading
-            setIcon("cat", accessibilityDescription: "ProxyCat")
+            updateIcon(.off)
         }
     }
 
@@ -86,15 +90,11 @@ class MenuBarController: NSObject, NSWindowDelegate {
 
         window.makeKeyAndOrderFront(nil)
         menuWindow = window
-
-        setIcon("cat.fill", accessibilityDescription: "ProxyCat Active")
     }
 
     private func hideMenu() {
         menuWindow?.orderOut(nil)
         menuWindow = nil
-
-        setIcon("cat", accessibilityDescription: "ProxyCat")
     }
 
     private func showUpdates(check: Bool) {
@@ -124,28 +124,11 @@ class MenuBarController: NSObject, NSWindowDelegate {
         hideMenu()
     }
 
-    func updateIcon(running: Bool, enabled: Bool) {
-        let iconName: String
-        if running && enabled {
-            iconName = "cat.fill"
-        } else if running {
-            iconName = "cat.circle"
-        } else {
-            iconName = "cat"
-        }
-        setIcon(iconName, accessibilityDescription: "ProxyCat")
-    }
-
-    private func setIcon(_ systemName: String, accessibilityDescription: String) {
+    private func updateIcon(_ state: MenuBarProxyState) {
         guard let button = statusItem.button else { return }
-        if let image = NSImage(systemSymbolName: systemName, accessibilityDescription: accessibilityDescription) {
-            image.size = NSSize(width: 18, height: 18)
-            image.isTemplate = true
-            button.image = image
-        } else {
-            button.image = nil
-        }
+        button.image = state.image()
         button.title = ""
-        button.toolTip = accessibilityDescription
+        button.toolTip = state.description
+        button.setAccessibilityLabel(state.description)
     }
 }

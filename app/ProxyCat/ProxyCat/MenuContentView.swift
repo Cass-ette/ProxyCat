@@ -77,15 +77,17 @@ struct MenuContentView: View {
     }
 
     private var headerSection: some View {
-        HStack {
-            Image(systemName: viewModel.systemProxyEnabled ? "cat.fill" : "cat")
-                .foregroundColor(viewModel.systemProxyEnabled ? .green : .secondary)
-            Text(viewModel.systemProxyEnabled ? "ProxyCat: 已连接" : "ProxyCat: 未连接")
+        let state = MenuBarProxyState(running: viewModel.coreRunning, enabled: viewModel.systemProxyEnabled, mode: viewModel.currentMode)
+        return HStack {
+            Image(systemName: state.symbol)
+                .foregroundColor(state.color.map { Color(nsColor: $0) } ?? .secondary)
+            Text(state.title)
                 .font(.headline)
             Spacer()
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .help(state.description)
     }
 
     private var profileSection: some View {

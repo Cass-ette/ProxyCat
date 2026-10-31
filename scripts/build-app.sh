@@ -9,6 +9,8 @@ APP_DIR="$REPO_ROOT/app/ProxyCat"
 HELPER_DIR="$REPO_ROOT/helper"
 RESOURCES_DIR="$APP_DIR/ProxyCat/Resources"
 
+python3 "$SCRIPT_DIR/version.py" check
+
 # Build proxyctl for macOS native
 echo "Building proxyctl..."
 mkdir -p "$RESOURCES_DIR"

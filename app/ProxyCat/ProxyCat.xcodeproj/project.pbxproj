@@ -18,6 +18,7 @@
 		A1000025 /* CoreWLAN.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1000024 /* CoreWLAN.framework */; };
 		A1000027 /* UpdateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000026 /* UpdateView.swift */; };
 		A1000029 /* releases in Resources */ = {isa = PBXBuildFile; fileRef = A1000028 /* releases */; };
+		A100002B /* MenuBarStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100002A /* MenuBarStatus.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -35,6 +36,7 @@
 		A1000024 /* CoreWLAN.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreWLAN.framework; path = System/Library/Frameworks/CoreWLAN.framework; sourceTree = SDKROOT; };
 		A1000026 /* UpdateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateView.swift; sourceTree = "<group>"; };
 		A1000028 /* releases */ = {isa = PBXFileReference; lastKnownFileType = folder; name = releases; path = ../../docs/releases; sourceTree = SOURCE_ROOT; };
+		A100002A /* MenuBarStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatus.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -54,6 +56,7 @@
 			children = (
 				A1000000 /* ProxyCatApp.swift */,
 				A1000002 /* MenuBarController.swift */,
+				A100002A /* MenuBarStatus.swift */,
 				A1000004 /* HelperClient.swift */,
 				A1000006 /* StatusViewModel.swift */,
 				A1000008 /* MenuContentView.swift */,
@@ -147,6 +150,7 @@
 			files = (
 				A1000001 /* ProxyCatApp.swift in Sources */,
 				A1000003 /* MenuBarController.swift in Sources */,
+				A100002B /* MenuBarStatus.swift in Sources */,
 				A1000005 /* HelperClient.swift in Sources */,
 				A1000007 /* StatusViewModel.swift in Sources */,
 				A1000009 /* MenuContentView.swift in Sources */,
@@ -278,7 +282,6 @@
 				CODE_SIGN_ENTITLEMENTS = ProxyCat/ProxyCat.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -288,7 +291,6 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.12.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.cassette.proxycat;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -303,7 +305,6 @@
 				CODE_SIGN_ENTITLEMENTS = ProxyCat/ProxyCat.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -313,7 +314,6 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.12.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.cassette.proxycat;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

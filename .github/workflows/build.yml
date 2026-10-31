@@ -46,6 +46,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Check version policy
+        run: |
+          python3 scripts/version.py check
+          python3 scripts/test-version.py
+
       - name: Build proxyctl universal binary
         run: |
           cd helper

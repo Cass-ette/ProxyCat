@@ -27,6 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: '^1.21'
@@ -37,10 +38,8 @@ jobs:
 
       - name: Verify tag version and run regressions
         run: |
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          VERSION="${RELEASE_TAG#v}"
-          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' app/ProxyCat/ProxyCat/Info.plist)"
-          [[ "$VERSION" == "$APP_VERSION" ]]
+          python3 scripts/version.py check --tag "$RELEASE_TAG"
+          python3 scripts/test-version.py
           (cd helper && go test ./...)
           bash scripts/test-shutdown.sh
           bash scripts/test-campus-network.sh

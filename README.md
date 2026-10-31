@@ -15,6 +15,7 @@ A diagnostic-first macOS menu bar app for managing Mihomo/Clash subscriptions wi
 - **Clean shutdown**: Turns off system proxies before stopping Mihomo on quit, logout, shutdown, or restart
 - **Campus Wi-Fi protection**: Matches saved SSIDs and either prompts or disconnects ProxyCat, without automatically reconnecting afterward
 - **Connection recovery**: Enabling the system proxy starts a stopped core with the saved configuration and waits for fresh proxy groups. Temporary controller failures preserve the last node list and saved profiles; retry without reimporting the subscription.
+- **Menu bar status**: Green means the system proxy is on; gray means off. Direct mode is blue, and an enabled system proxy with a stopped engine shows an orange warning. The tooltip describes the state; colors do not certify network reachability.
 
 ## Screenshots
 
@@ -49,6 +50,8 @@ Run the macOS policy and lifecycle regressions with `bash scripts/test-campus-ne
 Run connection recovery regressions with `bash scripts/test-connection-recovery.sh`. These also use isolated fake helpers, including simulated controller failures and network transitions.
 
 ## Building
+
+Version numbers follow the [versioning policy](docs/versioning.md): new features increment the minor version, fixes increment the patch version, and `Info.plist` is the single source. See the [release process](docs/release.md) for checks and packaging.
 
 ### Prerequisites
 

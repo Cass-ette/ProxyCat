@@ -187,7 +187,8 @@ struct ConnectionRecoveryTests {
         try await updateFailuresRemainReviewable()
         try legacyUpdateEventsStillDecode()
         try releaseNotesKeepSectionsAndContent()
-        print("Passed 16 connection, mode and update flow regression tests")
+        try await menuBarTracksProxyState()
+        print("Passed 17 connection, mode, menu bar and update flow regression tests")
     }
 
     @MainActor
@@ -412,5 +413,42 @@ struct ConnectionRecoveryTests {
         try expect(sections.map(\.title) == ["新功能", "修复", "安装"] && sections[0].items == ["**日志**：说明 补充内容"] && sections[2].items == ["打开 DMG。"],
                    "Preserve headings, inline formatting and continuation lines")
         try expect(ReleaseNotesSection.parse("").isEmpty, "Missing notes must use the empty state")
+    }
+
+    @MainActor
+    static func menuBarTracksProxyState() async throws {
+        let fixture = try Fixture(coreRunning: false)
+        var states: [MenuBarProxyState] = []
+        let observer = MenuBarStatusObserver(viewModel: fixture.viewModel) { states.append($0) }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        try expect(states.last == .off, "Menu bar starts with the system proxy off")
+
+        await fixture.viewModel.enableSystemProxy()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        try expect(states.last == .connected, "Enabling the proxy must update the menu bar without opening its window")
+        await fixture.viewModel.setMode("direct")
+        try await Task.sleep(nanoseconds: 20_000_000)
+        try expect(states.last == .direct, "Direct mode must not look like an active proxy route")
+        try fixture.remove("core-active")
+        await fixture.viewModel.refreshStatus()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        try expect(states.last == .engineStopped, "An enabled system proxy with a stopped core must warn")
+        await fixture.viewModel.disableSystemProxy()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        try expect(states.last == .off, "Disabling the system proxy must clear the active color")
+
+        try fixture.set("core-active")
+        await fixture.viewModel.refreshStatus()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        try expect(states.last == .engineOnly, "A running core alone must not look connected")
+        let count = states.count
+        await fixture.viewModel.refreshStatus()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        try expect(states.count == count, "Unchanged refreshes must not redraw the icon")
+        for state in [MenuBarProxyState.off, .engineOnly, .connected, .direct, .engineStopped] {
+            guard let image = state.image() else { throw TestFailure(description: "Missing status symbol") }
+            try expect(image.isTemplate == (state.color == nil), "Active colors must survive macOS template rendering")
+        }
+        withExtendedLifetime(observer) {}
     }
 }
