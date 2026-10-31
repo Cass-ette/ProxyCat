@@ -41,7 +41,7 @@ func fetchLatestRelease(client *http.Client, endpoint string) (Release, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return Release{}, fmt.Errorf("无法连接更新服务，请检查网络后重试")
+		return Release{}, &requestError{message: "无法连接 GitHub 更新服务。" + networkRetryHint, cause: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0") {

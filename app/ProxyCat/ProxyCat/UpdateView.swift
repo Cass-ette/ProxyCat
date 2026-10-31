@@ -41,6 +41,7 @@ struct UpdateView: View {
                 }
                 .padding(28)
             }
+            networkNotice
             if !viewModel.updateStatus.isEmpty && (!isCurrent || viewModel.updateFailed) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
@@ -54,6 +55,19 @@ struct UpdateView: View {
                     if viewModel.isInstallingUpdate, let progress = viewModel.updateProgress {
                         ProgressView(value: Double(progress), total: 100)
                     }
+                    if viewModel.updateFailed, let details = viewModel.updateErrorDetails, !details.isEmpty {
+                        DisclosureGroup("技术详情") {
+                            ScrollView {
+                                Text(details)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 90)
+                        }
+                        .font(.caption)
+                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 14)
@@ -64,6 +78,21 @@ struct UpdateView: View {
         .frame(minWidth: 520, idealWidth: 600, minHeight: 520, idealHeight: 680)
         .background(Color(NSColor.windowBackgroundColor))
         .onChange(of: version) { _ in collapsedSections = [] }
+    }
+
+    private var networkNotice: some View {
+        Label {
+            Text("检查和下载更新需要访问 GitHub，部分网络可能需要先开启代理或 VPN。连接失败时，请开启后重试。")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } icon: {
+            Image(systemName: "network")
+                .foregroundColor(.accentColor)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(Color.accentColor.opacity(0.06))
     }
 
     private var header: some View {

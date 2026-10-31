@@ -26,6 +26,7 @@ class StatusViewModel: ObservableObject {
     @Published var bootstrapStatus: String = ""
     @Published private(set) var isBootstrapping = false
     @Published var updateStatus: String = ""
+    @Published var updateErrorDetails: String?
     @Published var updateProgress: Int?
     @Published var availableUpdateVersion: String?
     @Published var isCheckingForUpdate = false
@@ -489,6 +490,7 @@ class StatusViewModel: ObservableObject {
         isCheckingForUpdate = true
         updateFailed = false
         updateStatus = "正在检查更新..."
+        updateErrorDetails = nil
         updateProgress = nil
         availableUpdateVersion = nil
         updateReleaseVersion = nil
@@ -508,6 +510,7 @@ class StatusViewModel: ObservableObject {
             updateReleaseURL = event.releaseURL
             updatePublishedAt = event.publishedAt
             updateFailed = event.stage == "error"
+            updateErrorDetails = event.stage == "error" ? event.details : nil
             lastError = event.stage == "error" ? event.message : nil
         case .failure(let error):
             updateStatus = "检查更新失败：\(error.localizedDescription)"
@@ -529,6 +532,7 @@ class StatusViewModel: ObservableObject {
         isInstallingUpdate = true
         updateFailed = false
         updateStatus = "正在准备更新..."
+        updateErrorDetails = nil
         updateProgress = nil
         lastError = nil
         defer { isInstallingUpdate = false }
@@ -546,6 +550,7 @@ class StatusViewModel: ObservableObject {
             if event.stage == "error" {
                 finished = true
                 updateFailed = true
+                updateErrorDetails = event.details
                 if event.recheck == true { availableUpdateVersion = nil }
             }
         }

@@ -130,6 +130,10 @@ private final class Fixture {
                     echo '{"stage":"error","message":"可用版本已变化，请重新检查更新","recheck":true}'
                     exit 1
                 fi
+                if [ -f "$fixture_dir/network-update" ]; then
+                    echo '{"stage":"error","message":"安装包下载失败：无法连接更新下载服务。请检查网络；部分网络需要开启代理或 VPN 后重试。","details":"Get https://github.com/app.dmg: dial tcp 20.205.243.166:443: i/o timeout"}'
+                    exit 1
+                fi
                 if [ -f "$fixture_dir/truncated-update" ]; then
                     echo '{"stage":"downloading","message":"下载中","progress":20}'
                     exit 7
@@ -184,11 +188,12 @@ struct ConnectionRecoveryTests {
         try await failedModeChangeKeepsSelection()
         try await reviewBeforeInstallingUpdate()
         try await interruptedUpdateIsRetryable()
+        try await downloadNetworkFailureIsRetryable()
         try await updateFailuresRemainReviewable()
         try legacyUpdateEventsStillDecode()
         try releaseNotesKeepSectionsAndContent()
         try await menuBarTracksProxyState()
-        print("Passed 17 connection, mode, menu bar and update flow regression tests")
+        print("Passed 18 connection, mode, menu bar and update flow regression tests")
     }
 
     @MainActor
@@ -382,6 +387,22 @@ struct ConnectionRecoveryTests {
         await fixture.viewModel.installUpdate()
         try expect(fixture.viewModel.updateFailed && !fixture.viewModel.showRestartAlert && fixture.viewModel.availableUpdateVersion == "0.13.0",
                    "An interrupted stream must allow a retry and must not show success")
+    }
+
+    @MainActor
+    static func downloadNetworkFailureIsRetryable() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.checkForUpdate()
+        try fixture.set("network-update")
+        await fixture.viewModel.installUpdate()
+        try expect(fixture.viewModel.updateFailed && fixture.viewModel.updateStatus.contains("代理或 VPN") && fixture.viewModel.updateErrorDetails?.contains("i/o timeout") == true,
+                   "Keep network recovery advice readable and retain technical details separately")
+        try expect(fixture.viewModel.availableUpdateVersion == "0.13.0" && !fixture.viewModel.showRestartAlert,
+                   "A failed download must allow retrying the reviewed version without claiming success")
+        try fixture.remove("network-update")
+        await fixture.viewModel.installUpdate()
+        try expect(fixture.viewModel.showRestartAlert && !fixture.viewModel.updateFailed && fixture.viewModel.updateErrorDetails == nil,
+                   "Retrying successfully must clear old errors and diagnostics")
     }
 
     @MainActor

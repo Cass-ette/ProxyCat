@@ -2,6 +2,7 @@ package selfupdate
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,10 +70,41 @@ func TestDownloadFileReportsNetworkError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "lookup github.com") {
-		t.Fatalf("error = %q, want network detail", err.Error())
+	event := failureEvent("安装包下载失败：", err)
+	if !strings.Contains(event.Message, "代理或 VPN") || !strings.Contains(event.Details, "lookup github.com") || strings.Contains(event.Message, "lookup github.com") {
+		t.Fatalf("expected readable advice and separate network detail: %+v", event)
 	}
 }
+
+func TestDownloadTimeoutAndInterruptPreserveRecoveryAdvice(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		transport roundTripFunc
+	}{
+		{"timeout", func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("dial tcp 20.205.243.166:443: i/o timeout")
+		}},
+		{"interrupted response", func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: &interruptedBody{}}, nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := downloadFile(&http.Client{Transport: tc.transport}, "https://github.com/app.dmg", filepath.Join(t.TempDir(), "app.dmg"), nil)
+			if err == nil {
+				t.Fatal("expected download failure")
+			}
+			event := failureEvent("安装包下载失败：", err)
+			if !strings.Contains(event.Message, "代理或 VPN") || event.Details == "" {
+				t.Fatalf("missing recovery advice or details: %+v", event)
+			}
+		})
+	}
+}
+
+type interruptedBody struct{}
+
+func (*interruptedBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (*interruptedBody) Close() error             { return nil }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

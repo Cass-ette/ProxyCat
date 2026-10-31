@@ -346,9 +346,11 @@ func TestUpdateClientUsesSystemProxy(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	client := updateHTTPClient()
-	request, _ := http.NewRequest("GET", "https://api.github.com", nil)
-	proxy, err := client.Transport.(*http.Transport).Proxy(request)
-	if err != nil || proxy == nil || proxy.String() != "http://127.0.0.1:17890" || client.Timeout == 0 {
-		t.Fatalf("update client must honor enabled macOS HTTPS proxy and set timeout: proxy=%v err=%v", proxy, err)
+	for _, endpoint := range []string{"https://api.github.com", "https://github.com/Cass-ette/ProxyCat/releases/download/v0.13.1/ProxyCat-0.13.1.dmg", "https://release-assets.githubusercontent.com/redirected.dmg"} {
+		request, _ := http.NewRequest("GET", endpoint, nil)
+		proxy, err := client.Transport.(*http.Transport).Proxy(request)
+		if err != nil || proxy == nil || proxy.String() != "http://127.0.0.1:17890" || client.Timeout == 0 {
+			t.Fatalf("update requests including asset redirects must honor enabled macOS HTTPS proxy: endpoint=%s proxy=%v err=%v", endpoint, proxy, err)
+		}
 	}
 }

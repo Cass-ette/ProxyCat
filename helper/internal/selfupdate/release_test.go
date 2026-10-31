@@ -89,6 +89,19 @@ func TestReleaseSourceFallbackAfterNetworkFailure(t *testing.T) {
 	}
 }
 
+func TestCheckNetworkFailureIncludesAdviceAndTechnicalDetails(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	server.Close()
+	var out bytes.Buffer
+	runner := Runner{CurrentVersion: "0.13.0", CheckOnly: true, Client: server.Client(), Endpoint: server.URL}
+	if runner.Run(&out, true) == 0 {
+		t.Fatal("expected a failed check")
+	}
+	if !strings.Contains(out.String(), "代理或 VPN") || !strings.Contains(out.String(), `"details":`) || !strings.Contains(out.String(), "connection refused") {
+		t.Fatalf("failed check must preserve advice and diagnostics: %s", &out)
+	}
+}
+
 func TestFetchLatestReleasePrefersMatchedDMGAndSupportsLegacyZIP(t *testing.T) {
 	for _, tc := range []struct {
 		name, assets, format, url string

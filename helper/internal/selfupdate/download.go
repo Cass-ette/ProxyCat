@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,7 +52,7 @@ func verifyFileSHA256(path string, expected string) error {
 func downloadFile(client *http.Client, url string, dest string, progress progressFunc) error {
 	resp, err := client.Get(url)
 	if err != nil {
-		return fmt.Errorf("网络连接失败：%v", err)
+		return &requestError{message: "无法连接更新下载服务。" + networkRetryHint, cause: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -65,7 +66,11 @@ func downloadFile(client *http.Client, url string, dest string, progress progres
 	defer out.Close()
 
 	if _, err := io.Copy(out, resp.Body); err != nil {
-		return fmt.Errorf("下载中断：%v", err)
+		var localError *os.PathError
+		if errors.As(err, &localError) {
+			return fmt.Errorf("写入更新文件失败：%w", err)
+		}
+		return &requestError{message: "更新下载中断。" + networkRetryHint, cause: err}
 	}
 	if progress != nil {
 		progress(100)

@@ -35,6 +35,8 @@ You can also use **检查更新** in the app, install the available update, and 
 
 Starting with 0.12.4, update checks use the release's `update.json` asset to avoid GitHub's shared anonymous API limit, with the API as a fallback. If both sources are unavailable, the update window still shows the installed version's bundled changelog and the failure reason. Older versions blocked by API limits can install the latest DMG manually.
 
+Checking and downloading updates require access to GitHub. Some networks may need a proxy or VPN enabled first. If a download fails, enable it and choose **重试安装**. From 0.13.1, the update window keeps this reminder visible and puts technical connection errors in expandable details.
+
 ## Campus Wi-Fi Protection
 
 Open **校园网保护** in the menu, allow Wi-Fi name access when prompted, and add the current Wi-Fi or enter its SSID manually. SSIDs are matched exactly, including case and spaces, and the list and policy are saved locally.

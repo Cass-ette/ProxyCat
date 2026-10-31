@@ -80,6 +80,7 @@ struct UpdateEvent: Codable {
     var releaseURL: String? = nil
     var publishedAt: String? = nil
     var recheck: Bool? = nil
+    var details: String? = nil
 }
 
 struct ReleaseNotesSection: Identifiable {

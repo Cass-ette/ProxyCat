@@ -31,6 +31,7 @@ type Event struct {
 	ReleaseURL     string `json:"releaseURL,omitempty"`
 	PublishedAt    string `json:"publishedAt,omitempty"`
 	Recheck        bool   `json:"recheck,omitempty"`
+	Details        string `json:"details,omitempty"`
 }
 
 func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
@@ -47,7 +48,7 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 		emit(stdout, jsonOutput, Event{Stage: "checking", Message: "正在检查更新..."})
 		fetched, err := fetchReleaseWithFallback(r.Client, r.Endpoint, r.FallbackEndpoint)
 		if err != nil {
-			emit(stdout, jsonOutput, Event{Stage: "error", Message: err.Error()})
+			emit(stdout, jsonOutput, failureEvent("", err))
 			return 1
 		}
 		latest = fetched
@@ -99,7 +100,7 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 	emit(stdout, jsonOutput, Event{Stage: "downloading", Message: "正在下载更新...", Progress: 20})
 	installerPath := filepath.Join(tmpDir, "update."+format)
 	if err := downloadFile(r.Client, latest.InstallerURL, installerPath, nil); err != nil {
-		emit(stdout, jsonOutput, Event{Stage: "error", Message: "安装包下载失败：" + err.Error()})
+		emit(stdout, jsonOutput, failureEvent("安装包下载失败：", err))
 		return 1
 	}
 
@@ -107,7 +108,7 @@ func (r Runner) Run(stdout io.Writer, jsonOutput bool) int {
 	emit(stdout, jsonOutput, Event{Stage: "verifying", Message: "正在验证更新包...", Progress: 50})
 	sha256Path := installerPath + ".sha256"
 	if err := downloadFile(r.Client, latest.SHA256URL, sha256Path, nil); err != nil {
-		emit(stdout, jsonOutput, Event{Stage: "error", Message: "校验文件下载失败：" + err.Error()})
+		emit(stdout, jsonOutput, failureEvent("校验文件下载失败：", err))
 		return 1
 	}
 	sha256Content, err := os.ReadFile(sha256Path)
@@ -165,4 +166,7 @@ func emit(w io.Writer, jsonOutput bool, event Event) {
 		return
 	}
 	fmt.Fprintln(w, event.Message)
+	if event.Details != "" {
+		fmt.Fprintln(w, event.Details)
+	}
 }
