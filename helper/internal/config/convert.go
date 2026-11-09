@@ -70,6 +70,8 @@ func applyProxyCatDefaults(cfg mihomoConfig) {
 	cfg["mode"] = "rule"
 	cfg["log-level"] = "info"
 	cfg["external-controller"] = "127.0.0.1:9090"
+	// Subscription data cannot opt into a privileged capture mode.
+	cfg["tun"] = map[string]interface{}{"enable": false}
 }
 
 func marshalConfig(cfg mihomoConfig) (string, error) {

@@ -81,3 +81,13 @@ rules:
 		t.Fatalf("normalized config missing external-controller: %s", yamlText)
 	}
 }
+
+func TestSubscriptionCannotEnableTUN(t *testing.T) {
+	text, err := NormalizeClashYAML([]byte("tun:\n  enable: true\n  stack: system\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "enable: false") {
+		t.Fatal("subscription enabled privileged capture without authorization")
+	}
+}

@@ -46,6 +46,8 @@ struct ProxyDelayResult: Codable {
 
 struct ModeStatus: Codable {
     let mode: String
+    let tunEnabled: Bool?
+    let tunDevice: String?
 }
 
 struct ProxyGroup: Codable, Identifiable {

@@ -6,6 +6,7 @@ struct MenuContentView: View {
     @State private var subscriptionURL: String = ""
     @State private var isBootstrapping: Bool = false
     @State private var campusSSIDInput = ""
+    @State private var showingModeHelp = false
     @AppStorage("nodesExpanded") private var nodesExpanded: Bool = true
 
     var body: some View {
@@ -77,7 +78,7 @@ struct MenuContentView: View {
     }
 
     private var headerSection: some View {
-        let state = MenuBarProxyState(running: viewModel.coreRunning, enabled: viewModel.systemProxyEnabled, mode: viewModel.currentMode)
+        let state = MenuBarProxyState(running: viewModel.coreRunning, enabled: viewModel.systemProxyEnabled, mode: viewModel.currentMode, tunEnabled: viewModel.tunEnabled)
         return HStack {
             Image(systemName: state.symbol)
                 .foregroundColor(state.color.map { Color(nsColor: $0) } ?? .secondary)
@@ -253,6 +254,23 @@ struct MenuContentView: View {
 
             modeControls
 
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Toggle("TUN", isOn: Binding(
+                        get: { viewModel.tunEnabled },
+                        set: { enabled in Task { await viewModel.setTUNEnabled(enabled) } }
+                    ))
+                    .toggleStyle(SwitchToggleStyle())
+                    .disabled(viewModel.isChangingTUN || viewModel.isChangingMode || viewModel.isToggleTesting || viewModel.isBootstrapping)
+                    if viewModel.isChangingTUN { ProgressView().scaleEffect(0.6).frame(width: 16, height: 16) }
+                }
+                Text(viewModel.isChangingTUN ? "正在切换，请完成系统授权…" : "接管应用流量，仍按上方模式分流；开启需管理员授权。")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 16)
+
             if !viewModel.proxyGroups.isEmpty {
                 delayControls
             }
@@ -423,20 +441,49 @@ struct MenuContentView: View {
     }
 
     private var modeControls: some View {
-        HStack(spacing: 8) {
-            ForEach([("rule", "规则"), ("global", "全局"), ("direct", "直连")], id: \.0) { mode, title in
-                Button(action: {
-                    Task { await viewModel.setMode(mode) }
-                }) {
-                    Text(title)
-                        .font(.system(size: 12, weight: viewModel.currentMode == mode ? .semibold : .regular))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .background(viewModel.currentMode == mode ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.08))
-                        .cornerRadius(6)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ForEach([("rule", "规则"), ("global", "全局"), ("direct", "直连")], id: \.0) { mode, title in
+                    Button(action: {
+                        Task { await viewModel.setMode(mode) }
+                    }) {
+                        Text(title)
+                            .font(.system(size: 12, weight: viewModel.currentMode == mode ? .semibold : .regular))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(viewModel.currentMode == mode ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.08))
+                            .cornerRadius(6)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .disabled(viewModel.isChangingMode || viewModel.isToggleTesting || viewModel.isChangingTUN)
+                }
+
+                Button(action: { showingModeHelp.toggle() }) {
+                    Text("❓")
+                        .font(.system(size: 13))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PlainButtonStyle())
-                .disabled(viewModel.isChangingMode || viewModel.isToggleTesting)
+                .help(showingModeHelp ? "收起模式说明" : "查看模式区别")
+                .accessibilityLabel(showingModeHelp ? "收起模式说明" : "查看模式区别")
+                .accessibilityValue(showingModeHelp ? "已展开" : "已收起")
+            }
+
+            if showingModeHelp {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("规则：按配置规则选择直连或代理。")
+                    Text("全局：统一使用全局分组选定的出口。")
+                    Text("直连：直接访问，不经过代理节点。")
+                    Text("仅影响进入 ProxyCat 的流量。")
+                        .foregroundColor(.secondary)
+                }
+                .font(.system(size: 11))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.08))
+                .cornerRadius(6)
             }
         }
         .padding(.horizontal, 16)
@@ -785,6 +832,23 @@ struct MenuContentView: View {
             MenuButton("运行诊断", icon: "stethoscope") {
                 Task { await viewModel.runDiagnose() }
             }
+
+            Link(destination: URL(string: "https://github.com/Cass-ette/ProxyCat/issues/new/choose")!) {
+                HStack {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .frame(width: 20)
+                    Text("问题反馈（Issue）")
+                    Spacer()
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PlainButtonStyle())
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .help("在 GitHub 报告问题或提出功能建议")
         }
         .padding(.bottom, 8)
     }

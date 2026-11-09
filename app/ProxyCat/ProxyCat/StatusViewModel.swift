@@ -10,6 +10,9 @@ class StatusViewModel: ObservableObject {
     @Published var corePID = 0
     @Published var systemProxyEnabled = false
     @Published var currentMode = "rule"
+    @Published var tunEnabled = false
+    @Published var tunDevice = ""
+    @Published var isChangingTUN = false
     @Published var currentGroup = ""
     @Published var currentNode = ""
     @Published var proxyGroups: [ProxyGroup] = []
@@ -145,12 +148,14 @@ class StatusViewModel: ObservableObject {
 
         await enforceCampusNetworkPolicy()
 
-        let modeResult = await helper.getMode()
+        let modeResult = await helper.getModeStatus()
         switch modeResult {
-        case .success(let mode):
-            currentMode = mode
+        case .success(let status):
+            currentMode = status.mode
+            tunEnabled = coreRunning && status.tunEnabled == true
+            tunDevice = status.tunDevice ?? ""
         case .failure:
-            if !coreRunning { currentMode = "rule" }
+            if !coreRunning { currentMode = "rule"; tunEnabled = false; tunDevice = "" }
         }
 
         // Proxy groups for current selection
@@ -217,7 +222,7 @@ class StatusViewModel: ObservableObject {
             return
         }
 
-        guard systemProxyEnabled || coreRunning || isBootstrapping else {
+        guard systemProxyEnabled || coreRunning || tunEnabled || isBootstrapping else {
             lastCampusPromptSSID = nil
             return
         }
@@ -235,6 +240,8 @@ class StatusViewModel: ObservableObject {
         switch result {
         case .success:
             systemProxyEnabled = false
+            tunEnabled = false
+            tunDevice = ""
             coreRunning = false
             corePID = 0
             toggleTestResult = nil
@@ -262,7 +269,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func enableSystemProxy() async {
-        guard !isToggleTesting, !isChangingMode, canStartProxyOnCurrentNetwork() else { return }
+        guard !isToggleTesting, !isChangingMode, !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
         isToggleTesting = true
         toggleTestResult = nil
         lastError = nil
@@ -417,7 +424,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func restartCore() async {
-        guard canStartProxyOnCurrentNetwork() else { return }
+        guard !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
         let result = await helper.restartCore()
         if case .failure(let error) = result {
             lastError = "Restart core failed: \(error.localizedDescription)"
@@ -426,7 +433,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func setMode(_ mode: String) async {
-        guard !isChangingMode, !isToggleTesting else { return }
+        guard !isChangingMode, !isToggleTesting, !isChangingTUN else { return }
         isChangingMode = true
         defer { isChangingMode = false }
         let result = await helper.setMode(mode)
@@ -441,6 +448,30 @@ class StatusViewModel: ObservableObject {
             lastError = "Set mode failed: \(error.localizedDescription)"
         }
         await refreshStatus()
+    }
+
+    func setTUNEnabled(_ enabled: Bool) async {
+        guard !isChangingTUN, !isChangingMode, !isToggleTesting, !isBootstrapping else { return }
+        if enabled && !canStartProxyOnCurrentNetwork() { return }
+        isChangingTUN = true
+        lastError = nil
+        defer { isChangingTUN = false }
+        switch await helper.setTUNEnabled(enabled) {
+        case .success:
+            // Confirm the kernel's result before showing an active tunnel.
+            if case .success(let status) = await helper.getModeStatus() {
+                tunEnabled = status.tunEnabled == true
+                tunDevice = status.tunDevice ?? ""
+                currentMode = status.mode
+                if enabled && !tunEnabled { lastError = "内核尚未确认 TUN 已开启，请查看日志。" }
+            } else {
+                lastError = "无法确认 TUN 状态，请查看日志。"
+            }
+        case .failure(let error):
+            lastError = error.localizedDescription
+        }
+        await refreshStatus()
+        await enforceCampusNetworkPolicy()
     }
 
     func selectProxy(group: String, proxy: String) async {
@@ -600,7 +631,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func activateProfile(id: String) async {
-        guard canStartProxyOnCurrentNetwork() else { return }
+        guard !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
         let result = await helper.activateProfile(id: id)
         if case .failure(let error) = result {
             lastError = "Activate profile failed: \(error.localizedDescription)"
@@ -625,6 +656,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func bootstrap(subscriptionURL: String) async {
+        guard !isChangingTUN else { return }
         guard canStartProxyOnCurrentNetwork() else {
             bootstrapStatus = "校园网保护已阻止启动代理。"
             return

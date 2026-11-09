@@ -53,7 +53,13 @@ private final class Fixture {
                 fi
                 touch "$fixture_dir/core-active"
                 ;;
-            'core stop') rm -f "$fixture_dir/core-active" ;;
+            'core stop') rm -f "$fixture_dir/core-active" "$fixture_dir/tun-active" ;;
+            'tun on')
+                if [ -f "$fixture_dir/fail-tun" ]; then echo '已取消管理员授权' >&2; exit 8; fi
+                touch "$fixture_dir/core-active"
+                if [ ! -f "$fixture_dir/unready-tun" ]; then touch "$fixture_dir/tun-active"; fi
+                ;;
+            'tun off') rm -f "$fixture_dir/tun-active" ;;
             'system-proxy status')
                 active=false
                 if [ -f "$fixture_dir/proxy-active" ]; then active=true; fi
@@ -68,7 +74,9 @@ private final class Fixture {
                 fi
                 mode=rule
                 if [ -f "$fixture_dir/mode" ]; then mode=$(cat "$fixture_dir/mode"); fi
-                printf '{"mode":"%s"}\n' "$mode"
+                tun=false
+                if [ -f "$fixture_dir/tun-active" ]; then tun=true; fi
+                printf '{"mode":"%s","tunEnabled":%s,"tunDevice":"utun9"}\n' "$mode" "$tun"
                 ;;
             'mode set')
                 if [ -f "$fixture_dir/fail-mode" ]; then
@@ -193,7 +201,9 @@ struct ConnectionRecoveryTests {
         try legacyUpdateEventsStillDecode()
         try releaseNotesKeepSectionsAndContent()
         try await menuBarTracksProxyState()
-        print("Passed 18 connection, mode, menu bar and update flow regression tests")
+        try await tunFollowsConfirmedStateAndCampusPolicy()
+        try await tunFailureDoesNotClaimConnection()
+        print("Passed 20 connection, mode, TUN, menu bar and update flow regression tests")
     }
 
     @MainActor
@@ -434,6 +444,33 @@ struct ConnectionRecoveryTests {
         try expect(sections.map(\.title) == ["新功能", "修复", "安装"] && sections[0].items == ["**日志**：说明 补充内容"] && sections[2].items == ["打开 DMG。"],
                    "Preserve headings, inline formatting and continuation lines")
         try expect(ReleaseNotesSection.parse("").isEmpty, "Missing notes must use the empty state")
+    }
+
+    @MainActor
+    static func tunFollowsConfirmedStateAndCampusPolicy() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.setTUNEnabled(true)
+        try expect(fixture.viewModel.tunEnabled && !fixture.viewModel.systemProxyEnabled, "TUN works independently of system proxy")
+        try expect(MenuBarProxyState(running: true, enabled: false, mode: "rule", tunEnabled: true) == .tun, "TUN alone must show active")
+        try expect(MenuBarProxyState(running: true, enabled: false, mode: "direct", tunEnabled: true) == .tunDirect, "TUN direct mode remains distinct")
+        try fixture.set("campus-arrived")
+        await fixture.viewModel.refreshStatus()
+        try expect(!fixture.viewModel.tunEnabled && !fixture.has("tun-active"), "Campus disconnect must clear TUN")
+        let enables = fixture.commands.filter { $0 == "tun on" }.count
+        await fixture.viewModel.setTUNEnabled(true)
+        try expect(fixture.commands.filter { $0 == "tun on" }.count == enables, "Campus policy must block TUN authorization")
+    }
+
+    @MainActor
+    static func tunFailureDoesNotClaimConnection() async throws {
+        let fixture = try Fixture()
+        try fixture.set("fail-tun")
+        await fixture.viewModel.setTUNEnabled(true)
+        try expect(!fixture.viewModel.tunEnabled && fixture.viewModel.lastError?.contains("取消") == true && !fixture.viewModel.isChangingTUN, "Cancelled authorization must not show success")
+        try fixture.remove("fail-tun")
+        try fixture.set("unready-tun")
+        await fixture.viewModel.setTUNEnabled(true)
+        try expect(!fixture.viewModel.tunEnabled && fixture.viewModel.lastError != nil, "Successful helper exit alone cannot certify TUN")
     }
 
     @MainActor

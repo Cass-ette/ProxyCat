@@ -15,7 +15,10 @@ A diagnostic-first macOS menu bar app for managing Mihomo/Clash subscriptions wi
 - **Clean shutdown**: Turns off system proxies before stopping Mihomo on quit, logout, shutdown, or restart
 - **Campus Wi-Fi protection**: Matches saved SSIDs and either prompts or disconnects ProxyCat, without automatically reconnecting afterward
 - **Connection recovery**: Enabling the system proxy starts a stopped core with the saved configuration and waits for fresh proxy groups. Temporary controller failures preserve the last node list and saved profiles; retry without reimporting the subscription.
-- **Menu bar status**: Green means the system proxy is on; gray means off. Direct mode is blue, and an enabled system proxy with a stopped engine shows an orange warning. The tooltip describes the state; colors do not certify network reachability.
+- **Menu bar status**: Green means the system proxy or TUN is on; gray means both are off. Direct mode is blue, and an enabled system proxy with a stopped engine shows an orange warning. The tooltip describes the active capture method; colors do not certify network reachability.
+- **Mode help**: Click ❓ beside Rule / Global / Direct for a brief explanation. Modes only affect traffic that enters ProxyCat.
+- **Issue feedback**: Choose **问题反馈（Issue）** to report a bug or suggest a feature on GitHub.
+- **TUN capture**: Enable the separate **TUN** switch to capture traffic from apps that do not use the system proxy. macOS asks for administrator authorization. Rule / Global / Direct still determine routing. Turning TUN off restores the normal core; quitting or campus disconnection stops the authorized session. TUN is off by default and is not automatically reconnected.
 
 ## Screenshots
 
@@ -145,7 +148,6 @@ ProxyCat stores user data under `~/Library/Application Support/ProxyCat/`:
 
 ProxyCat MVP does not include:
 - Self-implemented proxy protocols (uses Mihomo)
-- TUN mode
 - Advanced DNS configuration
 - Complex rule editor
 - Airport account/traffic parsing

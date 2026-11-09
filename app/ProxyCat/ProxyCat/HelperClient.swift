@@ -197,7 +197,7 @@ actor HelperClient {
         }
 
         let id = UUID()
-        if ["core", "system-proxy"].contains(args.first ?? ""), args.dropFirst().first != "status" {
+        if ["core", "system-proxy", "tun"].contains(args.first ?? ""), args.dropFirst().first != "status" {
             lifecycleCommands[id] = command
         }
         defer { lifecycleCommands[id] = nil }
@@ -318,6 +318,10 @@ actor HelperClient {
     func restartCore() async -> Result<Void, HelperError> {
         let result = await runCommand(["core", "restart"])
         return result.map { _ in () }
+    }
+
+    func setTUNEnabled(_ enabled: Bool) async -> Result<Void, HelperError> {
+        await runCommand(["tun", enabled ? "on" : "off"]).map { _ in () }
     }
 
     func testConnection() async -> Result<TestResult, HelperError> {
@@ -447,11 +451,15 @@ actor HelperClient {
     }
 
     func getMode() async -> Result<String, HelperError> {
+        await getModeStatus().map { $0.mode }
+    }
+
+    func getModeStatus() async -> Result<ModeStatus, HelperError> {
         let result = await runCommand(["mode", "status", "--json"])
         return result.flatMap { data in
             do {
                 let status = try JSONDecoder().decode(ModeStatus.self, from: data)
-                return .success(status.mode)
+                return .success(status)
             } catch {
                 return .failure(.decodingFailed(error))
             }

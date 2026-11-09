@@ -23,6 +23,7 @@ import (
 	"github.com/Cass-ette/ProxyCat/helper/internal/selfupdate"
 	"github.com/Cass-ette/ProxyCat/helper/internal/subscription"
 	"github.com/Cass-ette/ProxyCat/helper/internal/sysproxy"
+	"github.com/Cass-ette/ProxyCat/helper/internal/tun"
 )
 
 func main() {
@@ -51,6 +52,33 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	switch args[0] {
+	case "tun":
+		if len(args) == 3 && args[1] == "serve" {
+			if err := tun.Serve(args[2]); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
+		if len(args) != 2 || (args[1] != "on" && args[1] != "off") {
+			fmt.Fprintln(stderr, "tun requires on or off")
+			return 2
+		}
+		p, err := paths.Default()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if args[1] == "on" {
+			err = tun.Enable(p, os.Getppid())
+		} else {
+			err = tun.Disable(p)
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "diagnose":
 		return runDiagnose(args[1:], jsonOutput, stdout, stderr)
 	case "bootstrap":
@@ -237,6 +265,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 }
 
+func runtimeController() *controller.Client {
+	p, err := paths.Default()
+	if err != nil {
+		return controller.NewClient("")
+	}
+	return tun.Client(p)
+}
+
 func containsArg(args []string, target string) bool {
 	for _, arg := range args {
 		if arg == target {
@@ -346,7 +382,7 @@ func runBootstrap(url string, stdout io.Writer, stderr io.Writer) int {
 
 func waitForController(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	client := controller.NewClient("")
+	client := runtimeController()
 	var lastErr error
 	for time.Now().Before(deadline) {
 		if _, err := client.GetConfig(); err == nil {
@@ -444,6 +480,10 @@ func runCoreStart(stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "create logs directory: %v\n", err)
 		return 1
 	}
+	if tun.Active(runtimePaths) {
+		fmt.Fprintln(stdout, "TUN core is already running")
+		return 0
+	}
 
 	pid, err := core.Start(runtimePaths.Mihomo, runtimePaths.ConfigYAML, runtimePaths.MihomoLog)
 	if err != nil {
@@ -456,6 +496,17 @@ func runCoreStart(stdout io.Writer, stderr io.Writer) int {
 }
 
 func runCoreStop(stdout io.Writer, stderr io.Writer) int {
+	if p, err := paths.Default(); err == nil {
+		managed, err := tun.Stop(p)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if managed {
+			fmt.Fprintln(stdout, "TUN core stopped")
+			return 0
+		}
+	}
 	running, pid, err := core.Status()
 	if err != nil {
 		fmt.Fprintf(stderr, "check status: %v\n", err)
@@ -476,6 +527,15 @@ func runCoreStop(stdout io.Writer, stderr io.Writer) int {
 }
 
 func runCoreRestart(stdout io.Writer, stderr io.Writer) int {
+	p, err := paths.Default()
+	wasTUN := err == nil && tun.Active(p)
+	if wasTUN {
+		if err := tun.Restart(p, os.Getppid()); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
 	if exit := runCoreStop(stdout, stderr); exit != 0 {
 		return exit
 	}
@@ -566,7 +626,7 @@ func runSystemProxyStatusJSON(stdout io.Writer, stderr io.Writer, jsonOutput boo
 }
 
 func runModeStatusJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
-	client := controller.NewClient("")
+	client := runtimeController()
 	cfg, err := client.GetConfig()
 	if err != nil {
 		fmt.Fprintf(stderr, "get mode: %v\n", err)
@@ -574,7 +634,7 @@ func runModeStatusJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int 
 	}
 
 	if jsonOutput {
-		if err := json.NewEncoder(stdout).Encode(map[string]string{"mode": cfg.Mode}); err != nil {
+		if err := json.NewEncoder(stdout).Encode(map[string]interface{}{"mode": cfg.Mode, "tunEnabled": tun.Ready(cfg), "tunDevice": cfg.Tun["device"]}); err != nil {
 			fmt.Fprintf(stderr, "encode mode: %v\n", err)
 			return 1
 		}
@@ -593,7 +653,7 @@ func runModeSet(mode string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 
-	client := controller.NewClient("")
+	client := runtimeController()
 	if err := client.SetMode(mode); err != nil {
 		fmt.Fprintf(stderr, "set mode: %v\n", err)
 		return 1
@@ -611,7 +671,7 @@ func runGroups(stdout io.Writer, stderr io.Writer) int {
 }
 
 func runGroupsJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
-	client := controller.NewClient("")
+	client := runtimeController()
 	groups, err := client.GetProxyGroups()
 	if err != nil {
 		fmt.Fprintf(stderr, "get proxy groups: %v\n", err)
@@ -646,7 +706,7 @@ type proxyDelayResult struct {
 }
 
 func runGroupsDelay(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
-	client := controller.NewClient("")
+	client := runtimeController()
 	groups, err := client.GetProxyGroups()
 	if err != nil {
 		fmt.Fprintf(stderr, "get proxy groups: %v\n", err)
@@ -709,7 +769,7 @@ func isDelaySkippedProxy(name string, groupNames map[string]bool) bool {
 }
 
 func runProxyDelay(name string, stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
-	client := controller.NewClient("")
+	client := runtimeController()
 	const testURL = "http://www.gstatic.com/generate_204"
 	const timeoutMS = 5000
 	delay, err := client.TestProxyDelay(name, testURL, timeoutMS)
@@ -743,7 +803,7 @@ func runGroupsSelect(group string, proxy string, stdout io.Writer, stderr io.Wri
 }
 
 func runSelect(group string, proxy string, stdout io.Writer, stderr io.Writer) int {
-	client := controller.NewClient("")
+	client := runtimeController()
 	if err := client.SelectProxy(group, proxy); err != nil {
 		fmt.Fprintf(stderr, "select proxy: %v\n", err)
 		return 1
