@@ -17,6 +17,8 @@ A diagnostic-first macOS menu bar app for managing Mihomo/Clash subscriptions wi
 - **Connection recovery**: Enabling the system proxy starts a stopped core with the saved configuration and waits for fresh proxy groups. Temporary controller failures preserve the last node list and saved profiles; retry without reimporting the subscription.
 - **Menu bar status**: Green means the system proxy or TUN is on; gray means both are off. Direct mode is blue, and an enabled system proxy with a stopped engine shows an orange warning. The tooltip describes the active capture method; colors do not certify network reachability.
 - **Compact menu**: System proxy, routing modes and TUN stay visible. Nodes, profiles, campus settings and tools expand on demand and remember your choices; only the active node group expands by default. Subscription import opens automatically when no profile exists. Errors and ongoing operations remain visible even when their settings are collapsed.
+- **Website checks**: Open **这个网站打不开？** for a real request through ProxyCat, socket-correlated route evidence and response classification. Retry with another observed selector or explicitly switch to global with a restore action. A probe does not prove another app uses ProxyCat. Checks send no browser cookies and do not follow redirects.
+- **Node explanations**: Show observed changes in automatic groups without guessing failure causes. Latency reads fast / average / slow / unavailable, with untested distinct and milliseconds available on hover.
 - **Mode help**: Click the help icon beside Rule / Global / Direct for a brief explanation. Modes only affect traffic that enters ProxyCat.
 - **Issue feedback**: Choose **问题反馈（Issue）** to report a bug or suggest a feature on GitHub.
 - **TUN capture**: Enable the separate **TUN** switch to capture traffic from apps that do not use the system proxy. macOS asks for administrator authorization. Rule / Global / Direct still determine routing. Turning TUN off restores the normal core; quitting or campus disconnection stops the authorized session. TUN is off by default and is not automatically reconnected.
@@ -163,3 +165,5 @@ License TBD. All rights reserved until a license is chosen. See [LICENSE](LICENS
 ## Contributing
 
 See [docs/superpowers/specs/2026-05-02-proxycat-design.md](docs/superpowers/specs/2026-05-02-proxycat-design.md) for design specifications.
+
+Website routing and recovery regressions run with `bash scripts/test-connection-recovery.sh` and `go -C helper test ./internal/controller`. Set `PROXYCAT_TEST_MIHOMO` to an installed Mihomo binary to include isolated real-kernel route checks; these use loopback ports and never change the system proxy.

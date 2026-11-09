@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -210,6 +211,20 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		return runProxyDelay(args[1], stdout, stderr, jsonOutput)
 
+	case "website-check":
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, "website-check requires a URL")
+			return 2
+		}
+		result, err := runtimeController().CheckWebsite(context.Background(), args[1])
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			return 1
+		}
+		return 0
 	case "test":
 		return runTestJSON(stdout, stderr, jsonOutput)
 
@@ -445,6 +460,7 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl groups select <group> <proxy>")
 	fmt.Fprintln(w, "  proxyctl proxy-delay <name> [--json]")
 	fmt.Fprintln(w, "  proxyctl test")
+	fmt.Fprintln(w, "  proxyctl website-check <url> [--json]")
 	fmt.Fprintln(w, "  proxyctl self-update [--json] [--check-only]")
 	fmt.Fprintln(w, "  proxyctl update [--json] [--check-only]")
 	fmt.Fprintln(w, "  proxyctl select <group> <proxy>")

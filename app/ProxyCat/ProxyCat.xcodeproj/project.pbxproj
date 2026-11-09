@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        A100002D /* WebsiteCheckView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100002C /* WebsiteCheckView.swift */; };
 		A1000001 /* ProxyCatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000 /* ProxyCatApp.swift */; };
 		A1000003 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002 /* MenuBarController.swift */; };
 		A1000005 /* HelperClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000004 /* HelperClient.swift */; };
@@ -22,6 +23,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        A100002C /* WebsiteCheckView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebsiteCheckView.swift; sourceTree = "<group>"; };
 		A1000000 /* ProxyCatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxyCatApp.swift; sourceTree = "<group>"; };
 		A1000002 /* MenuBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarController.swift; sourceTree = "<group>"; };
 		A1000004 /* HelperClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperClient.swift; sourceTree = "<group>"; };
@@ -62,6 +64,7 @@
 				A1000008 /* MenuContentView.swift */,
 				A100000A /* Models.swift */,
 				A1000026 /* UpdateView.swift */,
+                A100002C /* WebsiteCheckView.swift */,
 				A1000028 /* releases */,
 				A1000022 /* Assets.xcassets */,
 				A100000C /* Info.plist */,
@@ -156,6 +159,7 @@
 				A1000009 /* MenuContentView.swift in Sources */,
 				A100000B /* Models.swift in Sources */,
 				A1000027 /* UpdateView.swift in Sources */,
+                A100002D /* WebsiteCheckView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

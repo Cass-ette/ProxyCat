@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +29,21 @@ func TestMihomoRoutingModes(t *testing.T) {
 	}))
 	defer origin.Close()
 	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "CONNECT" {
+			local, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			defer local.Close()
+			io.WriteString(local, "HTTP/1.1 200 Connection Established\r\n\r\n")
+			reader := bufio.NewReader(local)
+			if _, err := http.ReadRequest(reader); err != nil {
+				return
+			}
+			io.WriteString(local, "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nproxy route")
+			io.Copy(io.Discard, reader)
+			return
+		}
 		fmt.Fprint(w, "proxy route")
 	}))
 	defer node.Close()
@@ -81,8 +98,11 @@ rules:
 	ready := false
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 		if _, err := client.GetConfig(); err == nil {
-			ready = true
-			break
+			if listener, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort), 100*time.Millisecond); err == nil {
+				listener.Close()
+				ready = true
+				break
+			}
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -110,6 +130,18 @@ rules:
 		if err != nil || string(body) != want {
 			t.Fatalf("%s route = %q, want %q (error %v)", mode, body, want, err)
 		}
+		result, err := client.CheckWebsite(context.Background(), origin.URL+"/website")
+		wantRoute, wantNode := "proxy", "Test Node"
+		if mode == "direct" {
+			wantRoute, wantNode = "direct", "DIRECT"
+		}
+		if err != nil || result.Outcome != "responded" || result.Route != wantRoute || result.Node != wantNode {
+			t.Fatalf("%s website evidence: %+v, %v", mode, result, err)
+		}
+		if mode == "rule" && result.Rule != "Match" {
+			t.Fatalf("rule: %+v", result)
+		}
+
 		proxies, err := client.GetProxies()
 		if err != nil || proxies["Rule Proxy"].Now != "Test Node" {
 			t.Fatalf("%s changed rule selection: %+v (error %v)", mode, proxies["Rule Proxy"], err)

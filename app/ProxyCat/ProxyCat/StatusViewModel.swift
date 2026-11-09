@@ -6,6 +6,17 @@ import CoreLocation
 
 @MainActor
 class StatusViewModel: ObservableObject {
+    @Published var websiteResult: WebsiteCheckResult?
+    @Published var websiteCheckError: String?
+    @Published var isCheckingWebsite = false
+    @Published var isRecoveringWebsite = false
+    @Published var nodeChangeNotice: NodeChangeNotice?
+    @Published var websitePreviousMode: String?
+    private var nodeBaseline: (context: String, groups: [ProxyGroup])?
+    private var selectionInProgress = false
+    private var websiteContext = ""
+    private var lastWebsiteInput = ""
+
     @Published var coreRunning = false
     @Published var corePID = 0
     @Published var systemProxyEnabled = false
@@ -178,6 +189,8 @@ class StatusViewModel: ObservableObject {
         }
 
         await loadProfiles()
+        if websitePreviousMode != nil && currentMode != "global" { websitePreviousMode = nil }
+        recordNodeChanges()
     }
 
     func addCurrentWiFiToCampusNetworks() {
@@ -440,6 +453,7 @@ class StatusViewModel: ObservableObject {
         switch result {
         case .success:
             currentMode = mode
+            if mode != "global" { websitePreviousMode = nil }
             toggleTestResult = nil
             testResult = nil
             lastError = nil
@@ -475,11 +489,103 @@ class StatusViewModel: ObservableObject {
     }
 
     func selectProxy(group: String, proxy: String) async {
+        selectionInProgress = true
+        nodeBaseline = nil
+        defer { selectionInProgress = false }
+        lastError = nil
         let result = await helper.selectProxy(group: group, proxy: proxy)
         if case .failure(let error) = result {
             lastError = "Select proxy failed: \(error.localizedDescription)"
         }
         await refreshStatus()
+    }
+
+    // Resolve nested automatic groups for display without inventing a leaf.
+    var selectedLeafNode: String {
+        var name = currentNode
+        var visited = Set<String>()
+        while let group = proxyGroups.first(where: { $0.name == name }) {
+            guard visited.insert(name).inserted, !group.now.isEmpty else { return currentNode }
+            name = group.now
+        }
+        return name
+    }
+
+    private func recordNodeChanges() {
+        guard coreRunning, !isChangingMode, !isChangingTUN, !isBootstrapping, !selectionInProgress, proxyGroupsError == nil else {
+            nodeBaseline = nil
+            return
+        }
+        let context = "\(corePID)|\(activeProfileID ?? "")|\(currentMode)"
+        defer { nodeBaseline = (context, proxyGroups) }
+        guard let baseline = nodeBaseline, baseline.context == context else {
+            nodeChangeNotice = nil
+            return
+        }
+        for group in proxyGroups where ["URLTest", "Fallback"].contains(group.type) {
+            guard let previous = baseline.groups.first(where: { $0.name == group.name && $0.type == group.type }),
+                  !previous.now.isEmpty, !group.now.isEmpty, previous.now != group.now else { continue }
+            nodeChangeNotice = NodeChangeNotice(message: "「\(group.name)」已从 \(previous.now) 切换到 \(group.now)", observedAt: Date())
+            break
+        }
+    }
+
+    func checkWebsite(_ input: String) async {
+        guard !isCheckingWebsite else { return }
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        lastWebsiteInput = trimmed
+        websiteContext = "\(activeProfileID ?? "")|\(currentMode)|\(corePID)"
+        isCheckingWebsite = true
+        websiteResult = nil
+        websiteCheckError = nil
+        defer { isCheckingWebsite = false }
+        switch await helper.checkWebsite(trimmed) {
+        case .success(let result): websiteResult = result
+        case .failure(let error): websiteCheckError = error.localizedDescription
+        }
+    }
+
+    var websiteResultIsCurrent: Bool {
+        websiteContext == "\(activeProfileID ?? "")|\(currentMode)|\(corePID)"
+    }
+
+    var websiteRecoveryGroups: [ProxyGroup] {
+        guard websiteResultIsCurrent, let result = websiteResult, result.route == "proxy" else { return [] }
+        return proxyGroups.filter { $0.type == "Selector" && result.chains.contains($0.name) }
+    }
+
+    func changeNodeAndRecheck(group: String, proxy: String) async {
+        guard !isRecoveringWebsite, !isCheckingWebsite, !isChangingTUN, !isChangingMode,
+              let result = websiteResult, result.route == "proxy", result.connectionFailed,
+              websiteRecoveryGroups.contains(where: { $0.name == group && $0.all.contains(proxy) }) else { return }
+        isRecoveringWebsite = true
+        defer { isRecoveringWebsite = false }
+        await selectProxy(group: group, proxy: proxy)
+        guard lastError == nil else { websiteCheckError = lastError; return }
+        await checkWebsite(lastWebsiteInput)
+    }
+
+    func checkWebsiteUsingGlobal() async {
+        guard !isRecoveringWebsite, !isCheckingWebsite, !isChangingTUN, !isChangingMode, !isToggleTesting,
+              websiteResultIsCurrent, let result = websiteResult, result.route == "direct", result.connectionFailed,
+              currentMode == result.mode, currentMode != "global" else { return }
+        isRecoveringWebsite = true
+        defer { isRecoveringWebsite = false }
+        let previous = currentMode
+        await setMode("global")
+        guard currentMode == "global", lastError == nil else { websiteCheckError = lastError; return }
+        websitePreviousMode = previous
+        await checkWebsite(lastWebsiteInput)
+    }
+
+    func restoreWebsiteMode() async {
+        guard let previous = websitePreviousMode, !isRecoveringWebsite, !isCheckingWebsite, !isChangingMode else { return }
+        isRecoveringWebsite = true
+        defer { isRecoveringWebsite = false }
+        await setMode(previous)
+        if currentMode == previous { websitePreviousMode = nil }
+        else { websiteCheckError = lastError }
     }
 
     func testConnection() async {

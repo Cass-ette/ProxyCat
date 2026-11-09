@@ -10,6 +10,7 @@ class MenuBarController: NSObject, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var viewModel: StatusViewModel!
     private var menuWindow: KeyEventWindow?
+    private var websiteWindow: NSWindow?
     private var updateWindow: NSWindow?
     private var statusObserver: MenuBarStatusObserver?
 
@@ -57,7 +58,7 @@ class MenuBarController: NSObject, NSWindowDelegate {
         let hostingController = NSHostingController(
             rootView: MenuContentView(viewModel: viewModel, onShowUpdates: { [weak self] check in
                 self?.showUpdates(check: check)
-            })
+            }, onShowWebsiteCheck: { [weak self] in self?.showWebsiteCheck() })
                 .frame(width: windowWidth)
         )
 
@@ -95,6 +96,23 @@ class MenuBarController: NSObject, NSWindowDelegate {
     private func hideMenu() {
         menuWindow?.orderOut(nil)
         menuWindow = nil
+    }
+
+    private func showWebsiteCheck() {
+        hideMenu()
+        if websiteWindow == nil {
+            let controller = NSHostingController(rootView: WebsiteCheckView(viewModel: viewModel))
+            let window = NSWindow(contentViewController: controller)
+            window.title = "ProxyCat · 网站检查"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 560, height: 640))
+            window.contentMinSize = NSSize(width: 500, height: 420)
+            window.center()
+            websiteWindow = window
+        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        websiteWindow?.makeKeyAndOrderFront(nil)
     }
 
     private func showUpdates(check: Bool) {

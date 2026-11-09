@@ -178,7 +178,7 @@ actor HelperClient {
                         if process.terminationStatus == 0 || (allowFailureOutput && !data.isEmpty) {
                             result = .success(data)
                         } else {
-                            let commandName = args.joined(separator: " ")
+                            let commandName = args.first == "website-check" ? "website-check" : args.joined(separator: " ")
                             let message = stderr.isEmpty
                                 ? "proxyctl \(commandName) exited with status \(process.terminationStatus)"
                                 : stderr
@@ -187,7 +187,7 @@ actor HelperClient {
                         continuation.resume(returning: result)
                     } catch {
                         let nsError = error as NSError
-                        let commandName = args.joined(separator: " ")
+                        let commandName = args.first == "website-check" ? "website-check" : args.joined(separator: " ")
                         let message = "proxyctl \(commandName): \(error.localizedDescription) (\(nsError.domain) \(nsError.code))"
                         os_log("command: %{public}@", message)
                         continuation.resume(returning: .failure(.executionFailed(message)))
@@ -322,6 +322,14 @@ actor HelperClient {
 
     func setTUNEnabled(_ enabled: Bool) async -> Result<Void, HelperError> {
         await runCommand(["tun", enabled ? "on" : "off"]).map { _ in () }
+    }
+
+    func checkWebsite(_ input: String) async -> Result<WebsiteCheckResult, HelperError> {
+        let result = await runCommand(["website-check", input, "--json"])
+        return result.flatMap { data in
+            do { return .success(try JSONDecoder().decode(WebsiteCheckResult.self, from: data)) }
+            catch { return .failure(.decodingFailed(error)) }
+        }
     }
 
     func testConnection() async -> Result<TestResult, HelperError> {

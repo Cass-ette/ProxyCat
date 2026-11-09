@@ -354,3 +354,15 @@ func TestUpdateClientUsesSystemProxy(t *testing.T) {
 		}
 	}
 }
+
+func TestWebsiteCheckRejectsInvalidInputWithoutLeakingURL(t *testing.T) {
+	for _, args := range [][]string{{"website-check"}, {"website-check", "ftp://example.com"}, {"website-check", "https://user:private-value@example.com"}, {"website-check", "example.com", "extra"}} {
+		stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+		if code := run(args, stdout, stderr); code != 2 {
+			t.Fatalf("%v: %d", args, code)
+		}
+		if strings.Contains(stderr.String(), "private-value") {
+			t.Fatal("credentials leaked")
+		}
+	}
+}

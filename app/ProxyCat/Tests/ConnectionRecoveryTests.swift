@@ -41,6 +41,9 @@ private final class Fixture {
         log="$fixture_dir/commands.log"
         echo "$*" >> "$log"
         case "$1 $2" in
+            'website-check '*)
+                if [ -f "$fixture_dir/website-result.json" ]; then cat "$fixture_dir/website-result.json"; else echo 'invalid website' >&2; exit 2; fi
+                ;;
             'core status')
                 active=false
                 if [ -f "$fixture_dir/core-active" ]; then active=true; fi
@@ -85,7 +88,9 @@ private final class Fixture {
                 fi
                 printf '%s' "$3" > "$fixture_dir/mode"
                 ;;
+            'groups select') ;;
             'groups list')
+                if [ -f "$fixture_dir/nodegroups.json" ]; then cat "$fixture_dir/nodegroups.json"; exit 0; fi
                 if [ -f "$fixture_dir/enter-campus" ]; then
                     touch "$fixture_dir/campus-arrived"
                     echo '{}'
@@ -203,7 +208,93 @@ struct ConnectionRecoveryTests {
         try await menuBarTracksProxyState()
         try await tunFollowsConfirmedStateAndCampusPolicy()
         try await tunFailureDoesNotClaimConnection()
-        print("Passed 20 connection, mode, TUN, menu bar and update flow regression tests")
+        try websiteCopyDoesNotInventFacts()
+        try await websiteRecoveryMatchesEvidence()
+        try await websiteGlobalCanBeRestored()
+        try await websiteResultsExpireOnContextChanges()
+        try await automaticNodeChangesExplainOnlyObservedFacts()
+        try latencyStatesAreDistinct()
+        print("Passed 26 connection, website, node, mode, TUN, menu bar and update flow regression tests")
+    }
+
+    static func websiteFixture(_ route: String = "proxy", outcome: String = "timeout", mode: String = "rule") throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["host":"example.com", "scheme":"https", "outcome":outcome, "statusCode":outcome == "denied" ? 403 : 0, "elapsedMS":100, "route":route, "rule":"Match", "rulePayload":"", "chains": route == "proxy" ? ["Node A","Auto"] : ["DIRECT"], "node":route == "proxy" ? "Node A" : "DIRECT", "group": route == "proxy" ? "Auto" : "", "mode":mode, "observedAt":"2026-11-09T12:00:00Z"])
+    }
+
+    static func websiteCopyDoesNotInventFacts() throws {
+        let result = try JSONDecoder().decode(WebsiteCheckResult.self, from: websiteFixture())
+        try expect(result.reason.contains("默认") && !result.summary.contains("海外"), "MATCH is not geographic evidence")
+        let denied = try JSONDecoder().decode(WebsiteCheckResult.self, from: websiteFixture(outcome: "denied"))
+        try expect(!denied.connectionFailed && denied.outcomeLabel.contains("访问受限"), "HTTP 403 does not imply a dead node")
+    }
+
+    @MainActor
+    static func websiteRecoveryMatchesEvidence() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try websiteFixture().write(to: fixture.directory.appendingPathComponent("website-result.json"))
+        await fixture.viewModel.checkWebsite("https://example.com")
+        try expect(fixture.viewModel.websiteRecoveryGroups.map(\.name) == ["Auto"], "Only selectors on the observed chain can be recovered")
+        await fixture.viewModel.changeNodeAndRecheck(group: "Unrelated", proxy: "Node B")
+        try expect(!fixture.commands.contains("groups select Unrelated Node B"), "Cannot mutate unrelated groups")
+        await fixture.viewModel.changeNodeAndRecheck(group: "Auto", proxy: "Node B")
+        try expect(fixture.commands.contains("groups select Auto Node B") && fixture.commands.filter { $0.hasPrefix("website-check ") }.count == 2, "Changing an observed selector must rerun the website probe")
+    }
+
+    @MainActor
+    static func websiteGlobalCanBeRestored() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try websiteFixture("direct").write(to: fixture.directory.appendingPathComponent("website-result.json"))
+        await fixture.viewModel.checkWebsite("https://example.com")
+        await fixture.viewModel.checkWebsiteUsingGlobal()
+        try expect(fixture.viewModel.currentMode == "global" && fixture.viewModel.websitePreviousMode == "rule", "A global recovery keeps a restore affordance")
+        await fixture.viewModel.restoreWebsiteMode()
+        try expect(fixture.viewModel.currentMode == "rule" && fixture.viewModel.websitePreviousMode == nil, "Restore original mode explicitly")
+        try fixture.set("fail-mode")
+        await fixture.viewModel.checkWebsite("https://example.com")
+        await fixture.viewModel.checkWebsiteUsingGlobal()
+        try expect(fixture.viewModel.currentMode == "rule" && fixture.viewModel.websitePreviousMode == nil, "Failed switch cannot claim global mode")
+    }
+
+    @MainActor
+    static func websiteResultsExpireOnContextChanges() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try websiteFixture().write(to: fixture.directory.appendingPathComponent("website-result.json"))
+        await fixture.viewModel.checkWebsite("https://example.com")
+        fixture.viewModel.activeProfileID = "different-profile"
+        try expect(!fixture.viewModel.websiteResultIsCurrent && fixture.viewModel.websiteRecoveryGroups.isEmpty, "Old evidence must not change another profile")
+        await fixture.viewModel.changeNodeAndRecheck(group: "Auto", proxy: "Node B")
+        try expect(!fixture.commands.contains("groups select Auto Node B"), "Reject stale recovery")
+    }
+
+    @MainActor
+    static func automaticNodeChangesExplainOnlyObservedFacts() async throws {
+        let fixture = try Fixture()
+        func groups(_ node: String) throws {
+            let data = Data("{\"Auto\":{\"name\":\"Auto\",\"type\":\"URLTest\",\"now\":\"\(node)\",\"all\":[\"Node A\",\"Node B\"]}}".utf8)
+            try data.write(to: fixture.directory.appendingPathComponent("nodegroups.json"))
+        }
+        try groups("Node A")
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.viewModel.nodeChangeNotice == nil, "Initial snapshot is not a switch")
+        try groups("Node B")
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.viewModel.nodeChangeNotice?.message.contains("Node A 切换到 Node B") == true && fixture.viewModel.nodeChangeNotice?.message.contains("连不上") == false, "Change evidence cannot invent a failure cause")
+        fixture.viewModel.nodeChangeNotice = nil
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.viewModel.nodeChangeNotice == nil, "Unchanged refresh must not repeat a dismissed notice")
+        try groups("Node A")
+        await fixture.viewModel.selectProxy(group: "Auto", proxy: "Node A")
+        try expect(fixture.viewModel.nodeChangeNotice == nil, "Manual selection is not an automatic change")
+    }
+
+    static func latencyStatesAreDistinct() throws {
+        try expect(ProxyDelayResult(delay: 0, error: nil).quality == "未测试", "Zero is not a fast measurement")
+        try expect(ProxyDelayResult(delay: 0, error: "timeout").quality == "不可用", "Failure differs from untested")
+        try expect([42,150,800].map { ProxyDelayResult(delay: $0, error: nil).quality } == ["快","一般","慢"], "Latency categories stay readable")
+        try expect(ProxyDelayResult(delay: 800, error: nil).detail.contains("800 ms"), "Keep precise latency accessible")
     }
 
     @MainActor

@@ -3,6 +3,7 @@ import SwiftUI
 struct MenuContentView: View {
     @ObservedObject var viewModel: StatusViewModel
     let onShowUpdates: (Bool) -> Void
+    var onShowWebsiteCheck: () -> Void = {}
     @State private var subscriptionURL: String = ""
     @State private var isBootstrapping: Bool = false
     @State private var campusSSIDInput = ""
@@ -28,6 +29,29 @@ struct MenuContentView: View {
                     }
                     campusNotices
                     updateActivitySection
+                    if viewModel.isCheckingWebsite { activityLabel("正在检查网站…") }
+                    if viewModel.websitePreviousMode != nil {
+                        MenuButton("网站检测：恢复原模式", icon: "arrow.uturn.backward") {
+                            Task { await viewModel.restoreWebsiteMode() }
+                        }
+                        .disabled(viewModel.isCheckingWebsite || viewModel.isChangingMode)
+                    }
+                    if let notice = viewModel.nodeChangeNotice {
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(notice.message)
+                                Text("观察于 \(notice.observedAt.formatted(date: .omitted, time: .shortened))；原因未确认，经过该分组的新连接使用当前选择。")
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            Button(action: { viewModel.nodeChangeNotice = nil }) {
+                                Image(systemName: "xmark").foregroundColor(.secondary)
+                            }.buttonStyle(PlainButtonStyle()).help("忽略提示")
+                        }
+                        .font(.system(size: 11))
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                    }
+                    MenuButton("这个网站打不开？", icon: "globe") { onShowWebsiteCheck() }
 
                     Divider()
                     nodesSection
@@ -264,6 +288,7 @@ struct MenuContentView: View {
                         .foregroundColor(.secondary)
                     Spacer()
                     Text(toggleTestLabel(result))
+                        .help(result.detail)
                         .foregroundColor(toggleTestColor(result))
                         .lineLimit(2)
                 }
@@ -289,6 +314,8 @@ struct MenuContentView: View {
             if nodesExpanded {
                 if !viewModel.proxyGroups.isEmpty {
                     delayControls
+                    Text("快／一般／慢表示测试延迟；不可用表示本次测试失败。毫秒数见悬停提示。")
+                        .font(.system(size: 10)).foregroundColor(.secondary).padding(.horizontal, 16)
                     proxyGroupControls
                 } else {
                     Text(viewModel.coreRunning
@@ -312,9 +339,9 @@ struct MenuContentView: View {
 
     private var currentNodeSummary: String {
         if viewModel.currentMode == "direct" { return "直连模式" }
-        guard !viewModel.currentNode.isEmpty else { return "未选择" }
-        let name = displayName(for: viewModel.currentNode)
-        let delay = delayLabel(for: viewModel.currentNode)
+        guard !viewModel.selectedLeafNode.isEmpty else { return "未选择" }
+        let name = displayName(for: viewModel.selectedLeafNode)
+        let delay = delayLabel(for: viewModel.selectedLeafNode)
         return delay.isEmpty ? name : "\(name) · \(delay)"
     }
 
@@ -555,6 +582,7 @@ struct MenuContentView: View {
                                     Text(delayLabel(for: proxy))
                                         .font(.system(size: 11, design: .monospaced))
                                         .foregroundColor(delayColor(for: proxy))
+                                    .help(viewModel.proxyDelays[proxy]?.detail ?? "尚未测试")
                                 }
                                 .font(.system(size: 12))
                                 .contentShape(Rectangle())
@@ -602,16 +630,13 @@ struct MenuContentView: View {
 
     private func delayLabel(for proxy: String) -> String {
         guard let result = viewModel.proxyDelays[proxy] else {
-            return ""
+            return "未测试"
         }
-        if result.error != nil {
-            return "超时"
-        }
-        return "\(result.delay)ms"
+        return result.quality
     }
 
     private func delayColor(for proxy: String) -> Color {
-        guard let result = viewModel.proxyDelays[proxy], result.error == nil else {
+        guard let result = viewModel.proxyDelays[proxy], result.error == nil, result.delay > 0 else {
             return .secondary
         }
         if result.delay <= 100 {
@@ -776,12 +801,12 @@ struct MenuContentView: View {
     }
 
     private func toggleTestLabel(_ r: ProxyDelayResult) -> String {
-        if let err = r.error, !err.isEmpty { return "✕ \(err)" }
-        return "\(r.delay)ms"
+        r.quality
     }
 
     private func toggleTestColor(_ r: ProxyDelayResult) -> Color {
-        if r.error != nil { return .red }
+        if r.error != nil { return .orange }
+        if r.delay <= 0 { return .secondary }
         if r.delay <= 100 { return .green }
         if r.delay <= 250 { return .orange }
         return .red
