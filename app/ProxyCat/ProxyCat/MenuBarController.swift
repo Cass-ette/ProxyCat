@@ -54,11 +54,20 @@ class MenuBarController: NSObject, NSWindowDelegate {
 
     private func showMenu() {
         let windowWidth: CGFloat = 320
-        let windowHeight: CGFloat = 640
+        guard let button = statusItem.button else { return }
+        let buttonRect = button.convert(button.bounds, to: nil)
+        let screenRect = button.window?.convertToScreen(buttonRect) ?? buttonRect
+        let visibleFrame = button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? screenRect
+        let margin: CGFloat = 8
+        let windowHeight = min(640, max(160, screenRect.minY - visibleFrame.minY - margin * 2))
         let hostingController = NSHostingController(
             rootView: MenuContentView(viewModel: viewModel, onShowUpdates: { [weak self] check in
                 self?.showUpdates(check: check)
-            }, onShowWebsiteCheck: { [weak self] in self?.showWebsiteCheck() })
+            }, onShowWebsiteCheck: { [weak self] in self?.showWebsiteCheck() },
+            maximumHeight: windowHeight, onHeightChange: { [weak self] height in
+                // Apply geometry after SwiftUI finishes its layout pass.
+                DispatchQueue.main.async { self?.resizeMenu(to: height) }
+            })
                 .frame(width: windowWidth)
         )
 
@@ -71,26 +80,28 @@ class MenuBarController: NSObject, NSWindowDelegate {
         window.delegate = self
 
         // Position the whole window below the menu bar item, clamped to the visible screen.
-        if let button = statusItem.button {
-            let buttonRect = button.convert(button.bounds, to: nil)
-            let screenRect = button.window?.convertToScreen(buttonRect) ?? buttonRect
-            let visibleFrame = button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? screenRect
-            let margin: CGFloat = 8
+        let rawX = screenRect.midX - windowWidth / 2
+        let minX = visibleFrame.minX + margin
+        let maxX = visibleFrame.maxX - windowWidth - margin
+        let x = min(max(rawX, minX), maxX)
 
-            let rawX = screenRect.midX - windowWidth / 2
-            let minX = visibleFrame.minX + margin
-            let maxX = visibleFrame.maxX - windowWidth - margin
-            let x = min(max(rawX, minX), maxX)
+        let rawY = screenRect.minY - windowHeight - margin
+        let minY = visibleFrame.minY + margin
+        let y = max(rawY, minY)
 
-            let rawY = screenRect.minY - windowHeight - margin
-            let minY = visibleFrame.minY + margin
-            let y = max(rawY, minY)
+        window.setFrame(NSRect(x: x, y: y, width: windowWidth, height: windowHeight), display: true)
 
-            window.setFrame(NSRect(x: x, y: y, width: windowWidth, height: windowHeight), display: true)
-        }
-
-        window.makeKeyAndOrderFront(nil)
         menuWindow = window
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func resizeMenu(to height: CGFloat) {
+        guard let window = menuWindow, abs(window.frame.height - height) > 0.5 else { return }
+        var frame = window.frame
+        // Keep the top edge below the menu bar when sections open or close.
+        frame.origin.y = frame.maxY - height
+        frame.size.height = height
+        window.setFrame(frame, display: true)
     }
 
     private func hideMenu() {

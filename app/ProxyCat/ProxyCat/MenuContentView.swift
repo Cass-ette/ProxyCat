@@ -4,11 +4,14 @@ struct MenuContentView: View {
     @ObservedObject var viewModel: StatusViewModel
     let onShowUpdates: (Bool) -> Void
     var onShowWebsiteCheck: () -> Void = {}
+    var maximumHeight: CGFloat = 640
+    var onHeightChange: (CGFloat) -> Void = { _ in }
     @State private var subscriptionURL: String = ""
     @State private var isBootstrapping: Bool = false
     @State private var campusSSIDInput = ""
     @State private var showingModeHelp = false
     @State private var showingDiagnosticDetails = false
+    @State private var contentHeight: CGFloat = 0
     @AppStorage("nodesExpanded") private var nodesExpanded = false
     @AppStorage("connectionDetailsExpanded") private var connectionDetailsExpanded = false
     @AppStorage("profilesExpanded") private var profilesExpanded = false
@@ -22,7 +25,10 @@ struct MenuContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     headerSection
+                    quickStartSection
+                    Divider()
                     controlsSection
+                        .padding(.top, 10)
 
                     if hasFeedback {
                         feedbackSection
@@ -62,15 +68,27 @@ struct MenuContentView: View {
                     Divider()
                     moreSection
                 }
+                .background(GeometryReader { geometry in
+                    Color.clear.preference(key: MenuContentHeightKey.self, value: geometry.size.height)
+                })
             }
-            Divider()
+            .frame(height: contentHeight > 0
+                   ? min(contentHeight, maximumHeight - 41)
+                   : maximumHeight - 41)
+            Divider().frame(height: 1)
             quitButton
+                .frame(height: 40)
         }
         .background(VisualEffectView(material: .menu, blendingMode: .behindWindow))
         .cornerRadius(8)
         .shadow(radius: 4)
         .frame(width: 320)
-        .frame(maxHeight: 640)
+        .onPreferenceChange(MenuContentHeightKey.self) { height in
+            let measured = ceil(height)
+            guard measured > 0, measured != contentHeight else { return }
+            contentHeight = measured
+            onHeightChange(min(measured + 41, maximumHeight))
+        }
         .onAppear(perform: captureDefaultExpandedGroup)
         .onChange(of: viewModel.currentGroup) { _ in captureDefaultExpandedGroup() }
         .onChange(of: viewModel.activeProfileID) { _ in captureDefaultExpandedGroup() }
@@ -127,27 +145,27 @@ struct MenuContentView: View {
     }
 
     private var configurationSection: some View {
-        let importing = isBootstrapping || viewModel.isBootstrapping
-        let needsConfiguration = viewModel.profiles.isEmpty
-        let expanded = profilesExpanded || needsConfiguration || importing
         let profileName = viewModel.profiles.first { $0.id == viewModel.activeProfileID }?.name ?? "未选择配置"
         return VStack(alignment: .leading, spacing: 0) {
             MenuDisclosureRow(
-                "配置", summary: needsConfiguration ? "添加订阅以开始" : profileName,
-                isExpanded: expanded, canCollapse: !needsConfiguration && !importing
+                "配置", summary: profileName, isExpanded: profilesExpanded
             ) { profilesExpanded.toggle() }
-            if expanded {
-                if !needsConfiguration { profileSection }
-                quickStartSection
-                if !needsConfiguration {
+            if profilesExpanded {
+                if viewModel.profiles.isEmpty {
+                    Text("暂无配置，在上方粘贴订阅链接并一键启动。")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 16)
+                } else {
+                    profileSection
                     MenuButton("更新当前订阅", icon: "arrow.clockwise") {
                         Task { await viewModel.updateSubscription() }
                     }
-                    .disabled(importing)
+                    .disabled(isBootstrapping || viewModel.isBootstrapping)
                 }
             }
         }
-        .padding(.bottom, expanded ? 8 : 0)
+        .padding(.bottom, profilesExpanded ? 8 : 0)
     }
 
     private func showDeleteConfirmation(for profile: Profile) {
@@ -163,8 +181,10 @@ struct MenuContentView: View {
     }
 
     private var quickStartSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(viewModel.profiles.isEmpty ? "快速开始" : "添加订阅")
+        let importing = isBootstrapping || viewModel.isBootstrapping
+        let ready = !subscriptionURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("快速开始")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 16)
@@ -179,7 +199,7 @@ struct MenuContentView: View {
 
             // 一键启动按钮
             Button(action: {
-                guard !subscriptionURL.isEmpty else { return }
+                guard ready, !importing else { return }
                 isBootstrapping = true
                 Task {
                     await viewModel.bootstrap(subscriptionURL: subscriptionURL)
@@ -187,7 +207,7 @@ struct MenuContentView: View {
                 }
             }) {
                 HStack {
-                    if isBootstrapping {
+                    if importing {
                         ProgressView()
                             .scaleEffect(0.8)
                             .frame(width: 20)
@@ -195,7 +215,7 @@ struct MenuContentView: View {
                         Image(systemName: "play.fill")
                             .frame(width: 20)
                     }
-                    Text(isBootstrapping ? "启动中..." : "导入并启动")
+                    Text(importing ? "启动中..." : "一键导入并启动")
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
@@ -207,9 +227,9 @@ struct MenuContentView: View {
             .background(Color.accentColor.opacity(0.15))
             .cornerRadius(6)
             .padding(.horizontal, 16)
-            .disabled(isBootstrapping || subscriptionURL.isEmpty)
+            .disabled(importing || !ready)
 
-            if isBootstrapping {
+            if importing {
                 Text(viewModel.bootstrapStatus)
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
@@ -918,6 +938,13 @@ struct MenuContentView: View {
             NSApplication.shared.terminate(nil)
         }
         .padding(.vertical, 6)
+    }
+}
+
+private struct MenuContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

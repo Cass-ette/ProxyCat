@@ -16,7 +16,7 @@ A diagnostic-first macOS menu bar app for managing Mihomo/Clash subscriptions wi
 - **Campus Wi-Fi protection**: Matches saved SSIDs and either prompts or disconnects ProxyCat, without automatically reconnecting afterward
 - **Connection recovery**: Enabling the system proxy starts a stopped core with the saved configuration and waits for fresh proxy groups. Temporary controller failures preserve the last node list and saved profiles; retry without reimporting the subscription.
 - **Menu bar status**: Green means the system proxy or TUN is on; gray means both are off. Direct mode is blue, and an enabled system proxy with a stopped engine shows an orange warning. The tooltip describes the active capture method; colors do not certify network reachability.
-- **Compact menu**: System proxy, routing modes and TUN stay visible. Nodes, profiles, campus settings and tools expand on demand and remember your choices; only the active node group expands by default. Subscription import opens automatically when no profile exists. Errors and ongoing operations remain visible even when their settings are collapsed.
+- **Compact menu**: Subscription input and one-click import/start stay at the top, followed by the system proxy, routing modes and TUN. Nodes, profiles, campus settings and tools expand on demand and remember your choices; only the active node group expands by default. The menu shrinks to fit collapsed content and scrolls when it reaches the available screen height (up to 640 points). Errors and ongoing operations remain visible even when their settings are collapsed.
 - **Website checks**: Open **这个网站打不开？** for a real request through ProxyCat, socket-correlated route evidence and response classification. Retry with another observed selector or explicitly switch to global with a restore action. A probe does not prove another app uses ProxyCat. Checks send no browser cookies and do not follow redirects.
 - **Node explanations**: Show observed changes in automatic groups without guessing failure causes. Latency reads fast / average / slow / unavailable, with untested distinct and milliseconds available on hover.
 - **Mode help**: Click the help icon beside Rule / Global / Direct for a brief explanation. Modes only affect traffic that enters ProxyCat.
@@ -29,7 +29,8 @@ The menu bar app shows:
 - Current proxy status (On/Off)
 - Core status and system proxy state
 - Current node and profile summaries, with expandable settings
-- **配置**: import, switch, delete and update subscriptions
+- **快速开始**: paste a subscription link and import/start in one click
+- **配置**: switch, delete and update saved subscriptions
 - **更多**: connection tests, engine restart, updates, diagnostics, Issue feedback and logs
 
 ## Installation
