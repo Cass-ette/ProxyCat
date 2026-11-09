@@ -298,16 +298,25 @@ func Stop(p paths.RuntimePaths) (bool, error) {
 	if err != nil {
 		return true, err
 	}
+	return stopSession(p, s, Client(p))
+}
+
+func stopSession(p paths.RuntimePaths, s session, c *controller.Client) (bool, error) {
+	managed := true
 	if err := request(s, http.MethodPost, "/stop"); err != nil {
-		c := Client(p)
 		c.SetClient(&http.Client{Timeout: time.Second})
-		if _, alive := c.GetConfig(); alive == nil {
-			return true, fmt.Errorf("无法关闭 TUN：%w", err)
+		if cfg, alive := c.GetConfig(); alive == nil {
+			if cfg.Tun["enable"] == true {
+				return true, fmt.Errorf("无法关闭 TUN：%w", err)
+			}
+			// An ordinary core may have been started after an application crash.
+			// Discard the stale TUN marker without claiming that this core stopped.
+			managed = false
 		}
 	}
 	os.Remove(marker(p))
 	os.RemoveAll(s.Directory)
-	return true, nil
+	return managed, nil
 }
 
 func Disable(p paths.RuntimePaths) error {

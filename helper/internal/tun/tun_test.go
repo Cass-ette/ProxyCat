@@ -1,7 +1,9 @@
 package tun
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Cass-ette/ProxyCat/helper/internal/controller"
+	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
 	"gopkg.in/yaml.v3"
 )
 
@@ -181,6 +184,38 @@ func TestPrivilegedOutputRejectsSymlinksAndOtherOwners(t *testing.T) {
 	b, err := os.ReadFile(path)
 	if err != nil || string(b) != "keep" {
 		t.Fatal("rejected output changed file contents")
+	}
+}
+
+func TestStaleSessionDoesNotBlockOrdinaryCoreAfterCrash(t *testing.T) {
+	p := paths.ForHome(t.TempDir())
+	if err := os.MkdirAll(p.Config, 0700); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp("/tmp", "pcstale-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	s := session{Directory: dir, Token: strings.Repeat("a", 64)}
+	b, _ := json.Marshal(s)
+	if err := os.WriteFile(marker(p), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/configs" {
+			t.Error("unexpected controller request")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"tun":{"enable":false}}`))
+	}))
+	defer server.Close()
+	managed, err := stopSession(p, s, controller.NewClient(server.URL))
+	if err != nil || managed {
+		t.Fatalf("ordinary core misidentified as stopped TUN: %v %v", managed, err)
+	}
+	if _, err := os.Stat(marker(p)); !os.IsNotExist(err) {
+		t.Fatal("stale session was not removed")
 	}
 }
 
