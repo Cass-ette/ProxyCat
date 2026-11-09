@@ -7,74 +7,50 @@ struct MenuContentView: View {
     @State private var isBootstrapping: Bool = false
     @State private var campusSSIDInput = ""
     @State private var showingModeHelp = false
-    @AppStorage("nodesExpanded") private var nodesExpanded: Bool = true
+    @State private var showingDiagnosticDetails = false
+    @AppStorage("nodesExpanded") private var nodesExpanded = false
+    @AppStorage("connectionDetailsExpanded") private var connectionDetailsExpanded = false
+    @AppStorage("profilesExpanded") private var profilesExpanded = false
+    @AppStorage("campusSettingsExpanded") private var campusSettingsExpanded = false
+    @AppStorage("moreExpanded") private var moreExpanded = false
+    @AppStorage("nodeGroupExpansion") private var nodeGroupExpansion = "{}"
+    @State private var defaultExpandedGroups: [String: String] = [:]
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // Header - ProxyCat On/Off
-                headerSection
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    headerSection
+                    controlsSection
 
-                if !viewModel.profiles.isEmpty {
+                    if hasFeedback {
+                        feedbackSection
+                    }
+                    campusNotices
+                    updateActivitySection
+
                     Divider()
-                    profileSection
-                }
-
-                Divider()
-
-                // Quick Start section - 一键启动
-                quickStartSection
-
-                Divider()
-
-                // Status section
-                statusSection
-
-                Divider()
-
-                campusNetworkSection
-
-                Divider()
-
-                // Controls section
-                controlsSection
-
-                if hasFeedback {
+                    nodesSection
                     Divider()
-                    feedbackSection
+                    configurationSection
+                    Divider()
+                    campusSection
+                    Divider()
+                    moreSection
                 }
-
-                Divider()
-
-                // Actions section
-                actionsSection
-
-                Divider()
-
-                // Updates
-                updateSection
-
-                Divider()
-
-                // Diagnostics
-                diagnosticsSection
-
-                Divider()
-
-                // Open section
-                openSection
-
-                Divider()
-
-                // Quit
-                quitButton
             }
+            Divider()
+            quitButton
         }
         .background(VisualEffectView(material: .menu, blendingMode: .behindWindow))
         .cornerRadius(8)
         .shadow(radius: 4)
         .frame(width: 320)
         .frame(maxHeight: 640)
+        .onAppear(perform: captureDefaultExpandedGroup)
+        .onChange(of: viewModel.currentGroup) { _ in captureDefaultExpandedGroup() }
+        .onChange(of: viewModel.activeProfileID) { _ in captureDefaultExpandedGroup() }
+        .onChange(of: viewModel.proxyGroups.map(\.name)) { _ in captureDefaultExpandedGroup() }
     }
 
     private var headerSection: some View {
@@ -93,12 +69,6 @@ struct MenuContentView: View {
 
     private var profileSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("配置")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-
             ForEach(viewModel.profiles) { p in
                 HStack {
                     Image(systemName: viewModel.activeProfileID == p.id ? "checkmark.circle.fill" : "circle")
@@ -132,6 +102,30 @@ struct MenuContentView: View {
         .padding(.bottom, 8)
     }
 
+    private var configurationSection: some View {
+        let importing = isBootstrapping || viewModel.isBootstrapping
+        let needsConfiguration = viewModel.profiles.isEmpty
+        let expanded = profilesExpanded || needsConfiguration || importing
+        let profileName = viewModel.profiles.first { $0.id == viewModel.activeProfileID }?.name ?? "未选择配置"
+        return VStack(alignment: .leading, spacing: 0) {
+            MenuDisclosureRow(
+                "配置", summary: needsConfiguration ? "添加订阅以开始" : profileName,
+                isExpanded: expanded, canCollapse: !needsConfiguration && !importing
+            ) { profilesExpanded.toggle() }
+            if expanded {
+                if !needsConfiguration { profileSection }
+                quickStartSection
+                if !needsConfiguration {
+                    MenuButton("更新当前订阅", icon: "arrow.clockwise") {
+                        Task { await viewModel.updateSubscription() }
+                    }
+                    .disabled(importing)
+                }
+            }
+        }
+        .padding(.bottom, expanded ? 8 : 0)
+    }
+
     private func showDeleteConfirmation(for profile: Profile) {
         let alert = NSAlert()
         alert.messageText = "删除配置"
@@ -146,7 +140,7 @@ struct MenuContentView: View {
 
     private var quickStartSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("快速开始")
+            Text(viewModel.profiles.isEmpty ? "快速开始" : "添加订阅")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 16)
@@ -177,7 +171,7 @@ struct MenuContentView: View {
                         Image(systemName: "play.fill")
                             .frame(width: 20)
                     }
-                    Text(isBootstrapping ? "启动中..." : "一键启动")
+                    Text(isBootstrapping ? "启动中..." : "导入并启动")
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
@@ -204,41 +198,15 @@ struct MenuContentView: View {
 
     private var statusSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("状态")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-
             StatusRow(label: "代理引擎", value: viewModel.coreRunning ? "运行中" : "已停止")
+            if viewModel.coreRunning && viewModel.corePID > 0 {
+                StatusRow(label: "进程", value: String(viewModel.corePID))
+            }
             StatusRow(label: "系统代理", value: viewModel.systemProxyEnabled ? "已开启" : "已关闭")
+            StatusRow(label: "TUN", value: viewModel.tunEnabled ? "已开启" : "已关闭")
             StatusRow(label: "代理模式", value: modeLabel(viewModel.currentMode))
-            StatusRow(label: "当前节点", value: viewModel.currentNode.isEmpty ? "-" : viewModel.currentNode)
-
-            if viewModel.systemProxyEnabled {
-                HStack {
-                    Text(viewModel.currentMode == "direct" ? "直连测试:" : "连接测试:")
-                        .foregroundColor(.secondary)
-                    if viewModel.isToggleTesting {
-                        HStack(spacing: 6) {
-                            ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
-                            Text("测延迟中...").fontWeight(.medium)
-                        }
-                    } else if let r = viewModel.toggleTestResult {
-                        Text(toggleTestLabel(r))
-                            .fontWeight(.medium)
-                            .foregroundColor(toggleTestColor(r))
-                    } else {
-                        Text("-").foregroundColor(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .font(.system(size: 13))
-
-                if let r = viewModel.toggleTestResult, r.error != nil {
-                    toggleFailureBanner
-                }
+            if !viewModel.tunDevice.isEmpty {
+                StatusRow(label: "TUN 设备", value: viewModel.tunDevice)
             }
         }
         .padding(.bottom, 8)
@@ -246,69 +214,89 @@ struct MenuContentView: View {
 
     private var controlsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("控制")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
+            HStack {
+                Text("系统代理")
+                Spacer()
+                Toggle("系统代理", isOn: Binding(
+                    get: { viewModel.systemProxyEnabled },
+                    set: { enabled in
+                        Task {
+                            if enabled { await viewModel.enableSystemProxy() }
+                            else { await viewModel.disableSystemProxy() }
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(SwitchToggleStyle())
+                .disabled(!viewModel.systemProxyEnabled && (viewModel.isToggleTesting || viewModel.isChangingMode || viewModel.isChangingTUN || viewModel.isBootstrapping))
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 16)
 
             modeControls
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Toggle("TUN", isOn: Binding(
-                        get: { viewModel.tunEnabled },
-                        set: { enabled in Task { await viewModel.setTUNEnabled(enabled) } }
-                    ))
-                    .toggleStyle(SwitchToggleStyle())
-                    .disabled(viewModel.isChangingTUN || viewModel.isChangingMode || viewModel.isToggleTesting || viewModel.isBootstrapping)
-                    if viewModel.isChangingTUN { ProgressView().scaleEffect(0.6).frame(width: 16, height: 16) }
-                }
-                Text(viewModel.isChangingTUN ? "正在切换，请完成系统授权…" : "接管应用流量，仍按上方模式分流；开启需管理员授权。")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Text("TUN")
+                Spacer()
+                Toggle("TUN", isOn: Binding(
+                    get: { viewModel.tunEnabled },
+                    set: { enabled in Task { await viewModel.setTUNEnabled(enabled) } }
+                ))
+                .labelsHidden()
+                .toggleStyle(SwitchToggleStyle())
+                .disabled(viewModel.isChangingTUN || viewModel.isChangingMode || viewModel.isToggleTesting || viewModel.isBootstrapping)
             }
+            .font(.system(size: 12))
             .padding(.horizontal, 16)
+            .help("接管应用流量，仍按所选模式分流；开启需管理员授权。")
 
-            if !viewModel.proxyGroups.isEmpty {
-                delayControls
+            if viewModel.isChangingTUN {
+                activityLabel("正在切换 TUN，请完成系统授权…")
             }
-
-            if viewModel.proxyGroups.isEmpty {
-                Text(viewModel.coreRunning
-                     ? "节点尚未就绪，正在等待代理引擎。"
-                     : "代理引擎已停止，开启系统代理将使用已保存的配置启动。")
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 16)
-            } else {
+            if viewModel.isChangingMode {
+                activityLabel("正在切换代理模式…")
+            }
+            if viewModel.isToggleTesting {
+                activityLabel("正在检查连接…")
+            } else if viewModel.systemProxyEnabled, let result = viewModel.toggleTestResult {
                 HStack {
-                    Text("节点")
-                        .font(.system(size: 12, weight: .medium))
+                    Text(viewModel.currentMode == "direct" ? "直连测试" : "连接测试")
                         .foregroundColor(.secondary)
                     Spacer()
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            nodesExpanded.toggle()
-                        }
-                    }) {
-                        Image(systemName: nodesExpanded ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.secondary)
-                            .frame(width: 20, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(PlainButtonStyle())
+                    Text(toggleTestLabel(result))
+                        .foregroundColor(toggleTestColor(result))
+                        .lineLimit(2)
                 }
+                .font(.system(size: 11))
                 .padding(.horizontal, 16)
+                if result.error != nil { toggleFailureBanner }
+            }
 
-                if nodesExpanded {
-                    ScrollView {
-                        proxyGroupControls
-                    }
-                    .frame(maxHeight: 320)
-                    .transition(.opacity)
+            MenuDisclosureRow("连接详情", summary: viewModel.coreRunning ? "引擎运行中" : "引擎已停止", isExpanded: connectionDetailsExpanded) {
+                connectionDetailsExpanded.toggle()
+            }
+            if connectionDetailsExpanded { statusSection }
+        }
+        .padding(.bottom, 4)
+    }
+
+    private var nodesSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            MenuDisclosureRow("节点", summary: currentNodeSummary, isExpanded: nodesExpanded) {
+                nodesExpanded.toggle()
+            }
+            if viewModel.isTestingDelays { activityLabel("正在测试节点延迟…") }
+            if nodesExpanded {
+                if !viewModel.proxyGroups.isEmpty {
+                    delayControls
+                    proxyGroupControls
+                } else {
+                    Text(viewModel.coreRunning
+                         ? "节点尚未就绪，正在等待代理引擎。"
+                         : "代理引擎已停止，开启系统代理将使用已保存的配置启动。")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 16)
                 }
             }
 
@@ -319,17 +307,69 @@ struct MenuContentView: View {
                     .padding(.horizontal, 16)
             }
         }
-        .padding(.bottom, 8)
+        .padding(.bottom, nodesExpanded || viewModel.proxyGroupsError != nil || viewModel.isTestingDelays ? 8 : 0)
+    }
+
+    private var currentNodeSummary: String {
+        if viewModel.currentMode == "direct" { return "直连模式" }
+        guard !viewModel.currentNode.isEmpty else { return "未选择" }
+        let name = displayName(for: viewModel.currentNode)
+        let delay = delayLabel(for: viewModel.currentNode)
+        return delay.isEmpty ? name : "\(name) · \(delay)"
+    }
+
+    private func activityLabel(_ title: String) -> some View {
+        HStack(spacing: 6) {
+            ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
+            Text(title).fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.system(size: 11))
+        .foregroundColor(.secondary)
+        .padding(.horizontal, 16)
+    }
+
+    private var campusSection: some View {
+        let summary = !viewModel.campusProtectionEnabled ? "已关闭"
+            : viewModel.protectedWiFiSSIDs.isEmpty ? "已开启 · 未设置 Wi-Fi"
+            : "已开启 · \(viewModel.campusNetworkAction.title)"
+        return VStack(alignment: .leading, spacing: 0) {
+            MenuDisclosureRow("校园网保护", summary: summary, isExpanded: campusSettingsExpanded) {
+                campusSettingsExpanded.toggle()
+            }
+            if campusSettingsExpanded { campusNetworkSection }
+        }
+    }
+
+    private var campusNotices: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let notice = viewModel.campusProtectionNotice {
+                Text(notice)
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 6)
+            }
+            if viewModel.currentWiFiSSID == nil && viewModel.campusProtectionEnabled && !viewModel.protectedWiFiSSIDs.isEmpty {
+                Text("无法识别当前 Wi-Fi，校园网保护尚未生效。")
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+                wifiAccessButton
+            }
+        }
+    }
+
+    private var wifiAccessButton: some View {
+        MenuButton("允许读取 Wi-Fi 名称", icon: "location.circle") {
+            viewModel.requestWiFiAccess()
+        }
+        .font(.system(size: 11))
     }
 
     private var campusNetworkSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("校园网保护")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-
             Toggle("连接校园网时保护", isOn: $viewModel.campusProtectionEnabled)
                 .font(.system(size: 12))
                 .toggleStyle(SwitchToggleStyle())
@@ -407,34 +447,8 @@ struct MenuContentView: View {
             .padding(.horizontal, 16)
             .disabled(!viewModel.campusProtectionEnabled)
 
-            if let notice = viewModel.campusProtectionNotice {
-                Text(notice)
-                    .font(.system(size: 11))
-                    .foregroundColor(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 16)
-            }
-
-            if viewModel.currentWiFiSSID == nil {
-                if viewModel.campusProtectionEnabled && !viewModel.protectedWiFiSSIDs.isEmpty {
-                    Text("无法识别当前 Wi-Fi，校园网保护尚未生效。")
-                        .font(.system(size: 11))
-                        .foregroundColor(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 16)
-                }
-                Button(action: viewModel.requestWiFiAccess) {
-                    HStack {
-                        Image(systemName: "location.circle")
-                            .frame(width: 20)
-                        Text("允许读取 Wi-Fi 名称")
-                        Spacer()
-                    }
-                    .font(.system(size: 11))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PlainButtonStyle())
-                .padding(.horizontal, 16)
+            if viewModel.currentWiFiSSID == nil && (!viewModel.campusProtectionEnabled || viewModel.protectedWiFiSSIDs.isEmpty) {
+                wifiAccessButton
             }
         }
         .padding(.bottom, 8)
@@ -459,8 +473,9 @@ struct MenuContentView: View {
                 }
 
                 Button(action: { showingModeHelp.toggle() }) {
-                    Text("❓")
-                        .font(.system(size: 13))
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
@@ -477,6 +492,7 @@ struct MenuContentView: View {
                     Text("直连：直接访问，不经过代理节点。")
                     Text("仅影响进入 ProxyCat 的流量。")
                         .foregroundColor(.secondary)
+                    Text("TUN：接管应用流量，可搭配以上任一模式；开启需管理员授权。")
                 }
                 .font(.system(size: 11))
                 .fixedSize(horizontal: false, vertical: true)
@@ -520,42 +536,63 @@ struct MenuContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(viewModel.proxyGroups) { group in
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(group.name)
-                            .font(.system(size: 12, weight: .semibold))
-                        Spacer()
-                        Text(group.now.isEmpty ? "-" : group.now)
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
+                    MenuDisclosureRow(group.name, summary: group.now.isEmpty ? "未选择" : displayName(for: group.now), isExpanded: isGroupExpanded(group)) {
+                        setGroupExpanded(group, expanded: !isGroupExpanded(group))
                     }
-                    .padding(.horizontal, 16)
 
-                    ForEach(group.all, id: \.self) { proxy in
-                        Button(action: {
-                            Task { await viewModel.selectProxy(group: group.name, proxy: proxy) }
-                        }) {
-                            HStack {
-                                Image(systemName: group.now == proxy ? "checkmark.circle.fill" : "circle")
-                                    .frame(width: 20)
-                                    .foregroundColor(group.now == proxy ? .accentColor : .secondary)
-                                Text(displayName(for: proxy))
-                                    .lineLimit(1)
-                                Spacer()
-                                Text(delayLabel(for: proxy))
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(delayColor(for: proxy))
+                    if isGroupExpanded(group) {
+                        ForEach(group.all, id: \.self) { proxy in
+                            Button(action: {
+                                Task { await viewModel.selectProxy(group: group.name, proxy: proxy) }
+                            }) {
+                                HStack {
+                                    Image(systemName: group.now == proxy ? "checkmark.circle.fill" : "circle")
+                                        .frame(width: 20)
+                                        .foregroundColor(group.now == proxy ? .accentColor : .secondary)
+                                    Text(displayName(for: proxy))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text(delayLabel(for: proxy))
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundColor(delayColor(for: proxy))
+                                }
+                                .font(.system(size: 12))
+                                .contentShape(Rectangle())
                             }
-                            .font(.system(size: 12))
+                            .buttonStyle(PlainButtonStyle())
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 3)
                         }
-                        .buttonStyle(PlainButtonStyle())
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 3)
-                        .contentShape(Rectangle())
                     }
                 }
                 .padding(.vertical, 4)
             }
+        }
+    }
+
+    private var profileExpansionKey: String { viewModel.activeProfileID ?? "_default" }
+
+    private func captureDefaultExpandedGroup() {
+        guard defaultExpandedGroups[profileExpansionKey] == nil,
+              viewModel.proxyGroups.contains(where: { $0.name == viewModel.currentGroup }) else { return }
+        // Snapshot once per profile/menu opening; periodic status refreshes only update summaries.
+        defaultExpandedGroups[profileExpansionKey] = viewModel.currentGroup
+    }
+
+    private var savedGroupExpansion: [String: [String: Bool]] {
+        (try? JSONDecoder().decode([String: [String: Bool]].self, from: Data(nodeGroupExpansion.utf8))) ?? [:]
+    }
+
+    private func isGroupExpanded(_ group: ProxyGroup) -> Bool {
+        if let saved = savedGroupExpansion[profileExpansionKey]?[group.name] { return saved }
+        return group.name == (defaultExpandedGroups[profileExpansionKey] ?? viewModel.currentGroup)
+    }
+
+    private func setGroupExpanded(_ group: ProxyGroup, expanded: Bool) {
+        var saved = savedGroupExpansion
+        saved[profileExpansionKey, default: [:]][group.name] = expanded
+        if let data = try? JSONEncoder().encode(saved), let value = String(data: data, encoding: .utf8) {
+            nodeGroupExpansion = value
         }
     }
 
@@ -613,8 +650,14 @@ struct MenuContentView: View {
             }
 
             if let report = viewModel.diagnoseReport {
-                StatusRow(label: "诊断", value: diagnoseSummary(report))
-                diagnoseDetails(report)
+                if report.checks.contains(where: { $0.status.lowercased() != "pass" }) {
+                    MenuDisclosureRow("诊断", summary: diagnoseSummary(report), isExpanded: showingDiagnosticDetails) {
+                        showingDiagnosticDetails.toggle()
+                    }
+                    if showingDiagnosticDetails { diagnoseDetails(report) }
+                } else {
+                    StatusRow(label: "诊断", value: diagnoseSummary(report))
+                }
             }
 
             if let lastError = viewModel.lastError {
@@ -626,10 +669,6 @@ struct MenuContentView: View {
             }
         }
         .padding(.bottom, 8)
-    }
-
-    private func statusText(_ ok: Bool) -> String {
-        ok ? "✓" : "✗"
     }
 
     private func modeLabel(_ mode: String) -> String {
@@ -748,29 +787,20 @@ struct MenuContentView: View {
         return .red
     }
 
+    private var moreSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MenuDisclosureRow("更多", summary: "工具与设置", isExpanded: moreExpanded) { moreExpanded.toggle() }
+            if moreExpanded {
+                actionsSection
+                updateSection
+                diagnosticsSection
+                openSection
+            }
+        }
+    }
+
     private var actionsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("操作")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-
-            if viewModel.systemProxyEnabled {
-                MenuButton("关闭系统代理", icon: "network.slash") {
-                    Task { await viewModel.disableSystemProxy() }
-                }
-            } else {
-                MenuButton("开启系统代理", icon: "network") {
-                    Task { await viewModel.enableSystemProxy() }
-                }
-                .disabled(viewModel.isToggleTesting)
-            }
-
-            MenuButton("更新订阅", icon: "arrow.clockwise") {
-                Task { await viewModel.updateSubscription() }
-            }
-
             MenuButton("测试连接", icon: "checkmark.shield") {
                 Task { await viewModel.testConnection() }
             }
@@ -784,12 +814,6 @@ struct MenuContentView: View {
 
     private var updateSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("更新")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-
             MenuButton(viewModel.isCheckingForUpdate ? "检查中..." : "检查更新", icon: "arrow.down.circle") {
                 onShowUpdates(true)
             }
@@ -798,13 +822,12 @@ struct MenuContentView: View {
             MenuButton("更新日志", icon: "clock.arrow.circlepath") {
                 onShowUpdates(false)
             }
+        }
+        .padding(.bottom, 8)
+    }
 
-            if viewModel.availableUpdateVersion != nil || viewModel.isInstallingUpdate || viewModel.showRestartAlert {
-                MenuButton(viewModel.showRestartAlert ? "更新完成 · 查看详情" : "查看更新详情", icon: "doc.text") {
-                    onShowUpdates(true)
-                }
-            }
-
+    private var updateActivitySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
             if !viewModel.updateStatus.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(viewModel.updateStatus)
@@ -817,18 +840,16 @@ struct MenuContentView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 6)
             }
+            if viewModel.availableUpdateVersion != nil || viewModel.isInstallingUpdate || viewModel.showRestartAlert || viewModel.updateFailed {
+                MenuButton(viewModel.showRestartAlert ? "更新完成 · 查看详情" : "查看更新详情", icon: "doc.text") {
+                    onShowUpdates(true)
+                }
+            }
         }
-        .padding(.bottom, 8)
     }
 
     private var diagnosticsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("诊断")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-
             MenuButton("运行诊断", icon: "stethoscope") {
                 Task { await viewModel.runDiagnose() }
             }
@@ -849,6 +870,7 @@ struct MenuContentView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
             .help("在 GitHub 报告问题或提出功能建议")
+
         }
         .padding(.bottom, 8)
     }
@@ -870,8 +892,52 @@ struct MenuContentView: View {
         MenuButton("退出", icon: "xmark.circle") {
             NSApplication.shared.terminate(nil)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 6)
+    }
+}
+
+struct MenuDisclosureRow: View {
+    let title: String
+    let summary: String
+    let isExpanded: Bool
+    var canCollapse = true
+    let action: () -> Void
+
+    init(_ title: String, summary: String, isExpanded: Bool, canCollapse: Bool = true, action: @escaping () -> Void) {
+        self.title = title
+        self.summary = summary
+        self.isExpanded = isExpanded
+        self.canCollapse = canCollapse
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                Spacer(minLength: 4)
+                Text(summary)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PlainButtonStyle())
+        .disabled(!canCollapse)
+        .accessibilityLabel("\(title)，\(summary)")
+        .accessibilityValue(isExpanded ? "已展开" : "已收起")
+        .help(canCollapse ? (isExpanded ? "收起\(title)" : "展开\(title)") : "请先完成配置")
     }
 }
 
@@ -911,6 +977,7 @@ struct MenuButton: View {
                 Text(title)
                 Spacer()
             }
+            .contentShape(Rectangle())
         }
         .buttonStyle(PlainButtonStyle())
         .padding(.horizontal, 16)

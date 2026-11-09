@@ -16,7 +16,8 @@ A diagnostic-first macOS menu bar app for managing Mihomo/Clash subscriptions wi
 - **Campus Wi-Fi protection**: Matches saved SSIDs and either prompts or disconnects ProxyCat, without automatically reconnecting afterward
 - **Connection recovery**: Enabling the system proxy starts a stopped core with the saved configuration and waits for fresh proxy groups. Temporary controller failures preserve the last node list and saved profiles; retry without reimporting the subscription.
 - **Menu bar status**: Green means the system proxy or TUN is on; gray means both are off. Direct mode is blue, and an enabled system proxy with a stopped engine shows an orange warning. The tooltip describes the active capture method; colors do not certify network reachability.
-- **Mode help**: Click ❓ beside Rule / Global / Direct for a brief explanation. Modes only affect traffic that enters ProxyCat.
+- **Compact menu**: System proxy, routing modes and TUN stay visible. Nodes, profiles, campus settings and tools expand on demand and remember your choices; only the active node group expands by default. Subscription import opens automatically when no profile exists. Errors and ongoing operations remain visible even when their settings are collapsed.
+- **Mode help**: Click the help icon beside Rule / Global / Direct for a brief explanation. Modes only affect traffic that enters ProxyCat.
 - **Issue feedback**: Choose **问题反馈（Issue）** to report a bug or suggest a feature on GitHub.
 - **TUN capture**: Enable the separate **TUN** switch to capture traffic from apps that do not use the system proxy. macOS asks for administrator authorization. Rule / Global / Direct still determine routing. Turning TUN off restores the normal core; quitting or campus disconnection stops the authorized session. TUN is off by default and is not automatically reconnected.
 
@@ -25,8 +26,9 @@ A diagnostic-first macOS menu bar app for managing Mihomo/Clash subscriptions wi
 The menu bar app shows:
 - Current proxy status (On/Off)
 - Core status and system proxy state
-- Quick actions: toggle proxy, update subscription, test connection, restart core
-- Diagnostics and logs access
+- Current node and profile summaries, with expandable settings
+- **配置**: import, switch, delete and update subscriptions
+- **更多**: connection tests, engine restart, updates, diagnostics, Issue feedback and logs
 
 ## Installation
 
