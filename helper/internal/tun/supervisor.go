@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,6 +36,11 @@ func Serve(directory string) (result error) {
 	if s.Directory != directory || s.UID <= 0 || len(s.Token) != 64 || processStart(s.ParentPID) != s.ParentStart || s.ParentStart == "" {
 		return fmt.Errorf("invalid TUN owner")
 	}
+	return serveAuthorizedSession(s)
+}
+
+func serveAuthorizedSession(s session) (result error) {
+	directory := s.Directory
 	defer func() {
 		if result != nil {
 			if file, err := openOwnedFile(filepath.Join(directory, "error"), s.UID, os.O_WRONLY); err == nil {
@@ -66,11 +72,16 @@ func Serve(directory string) (result error) {
 	if err := copyFile(s.Binary, filepath.Join(rootDir, "mihomo"), 0700); err != nil {
 		return err
 	}
-	if err := copyFile(filepath.Join(directory, "config.yaml"), filepath.Join(rootDir, "config.yaml"), 0600); err != nil {
+	if err := copyUserFile(filepath.Join(directory, "config.yaml"), filepath.Join(rootDir, "config.yaml"), s.UID, 0600); err != nil {
 		return err
 	}
+	private, release, err := preparePrivateListeners(filepath.Join(rootDir, "config.yaml"))
+	if err != nil {
+		return err
+	}
+	defer release()
 	for _, name := range []string{"GeoSite.dat", "GeoIP.dat", "geoip.metadb", "Country.mmdb", "ASN.mmdb"} {
-		if err := copyFile(filepath.Join(s.DataDirectory, name), filepath.Join(rootDir, name), 0600); err != nil && !os.IsNotExist(err) {
+		if err := copyUserFile(filepath.Join(s.DataDirectory, name), filepath.Join(rootDir, name), s.UID, 0600); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -84,34 +95,31 @@ func Serve(directory string) (result error) {
 		_, exists := os.Stat(directory)
 		return exists == nil && os.IsNotExist(cancelled) && processStart(s.ParentPID) == s.ParentStart
 	}
-	if err := awaitStart(directory, ownerAlive); err != nil {
-		return err
+	var relay *relayProcess
+	relayFailed := make(chan error, 1)
+	launch := func() (*exec.Cmd, error) {
+		var err error
+		relay, err = startUserRelay(s, private, log, relayFailed)
+		if err != nil {
+			return nil, err
+		}
+		release()
+		cmd := exec.Command(filepath.Join(rootDir, "mihomo"), "-d", rootDir, "-f", filepath.Join(rootDir, "config.yaml"))
+		cmd.Stdout, cmd.Stderr = log, log
+		return cmd, cmd.Start()
 	}
-	cmd := exec.Command(filepath.Join(rootDir, "mihomo"), "-d", rootDir, "-f", filepath.Join(rootDir, "config.yaml"))
-	cmd.Stdout, cmd.Stderr = log, log
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	client := controller.NewClientWithSecret("http://127.0.0.1:9090", s.Token)
-	client.SetClient(&http.Client{Timeout: time.Second})
+	client := controller.NewClientWithSecret("http://"+loopback(private.ControllerPort), s.Token)
+	transport := &http.Transport{Proxy: nil}
+	defer transport.CloseIdleConnections()
+	client.SetClient(&http.Client{Transport: transport, Timeout: time.Second})
 	ready := func() bool {
+		// Public listeners have already been bound by the user relay. Require
+		// the private mixed listener as well as the real TUN interface.
+		defer transport.CloseIdleConnections()
 		cfg, err := client.GetConfig()
-		return err == nil && Ready(cfg)
+		return err == nil && Ready(cfg) && cfg.MixedPort == private.ProxyPort
 	}
-	return supervise(s, cmd, ready, ownerAlive)
-}
-
-func awaitStart(directory string, ownerAlive func() bool) error {
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
-		if !ownerAlive() {
-			return fmt.Errorf("TUN 启动已取消")
-		}
-		if _, err := os.Stat(filepath.Join(directory, "start")); err == nil {
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return fmt.Errorf("TUN 启动等待超时")
+	return superviseWithCompanion(s, nil, launch, ready, ownerAlive, func() { relay.stop() }, relayFailed)
 }
 
 func openOwnedFile(path string, uid, flags int) (*os.File, error) {
@@ -141,12 +149,40 @@ func Ready(cfg *controller.Config) bool {
 }
 
 func supervise(s session, cmd *exec.Cmd, ready, ownerAlive func() bool) error {
-	exited := make(chan struct{})
+	return superviseSession(s, cmd, nil, ready, ownerAlive)
+}
+
+// Publish the control socket before launching the privileged core. The caller
+// can prove that preparation succeeded while its ordinary core is still alive.
+func superviseSession(s session, cmd *exec.Cmd, launch func() (*exec.Cmd, error), ready, ownerAlive func() bool) error {
+	return superviseWithCompanion(s, cmd, launch, ready, ownerAlive, nil, nil)
+}
+
+func superviseWithCompanion(s session, cmd *exec.Cmd, launch func() (*exec.Cmd, error), ready, ownerAlive func() bool, stopCompanion func(), companionFailed <-chan error) error {
+	var exited chan struct{}
 	var exitError error
-	go func() { exitError = cmd.Wait(); close(exited) }()
+	var started atomic.Bool
+	startedAt := time.Now()
+	watch := func(child *exec.Cmd) {
+		cmd = child
+		exited = make(chan struct{})
+		startedAt = time.Now()
+		started.Store(true)
+		go func() { exitError = child.Wait(); close(exited) }()
+	}
+	if cmd != nil {
+		watch(cmd)
+	}
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
+			started.Store(false)
+			if stopCompanion != nil {
+				stopCompanion()
+			}
+			if cmd == nil {
+				return
+			}
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 			select {
 			case <-exited:
@@ -172,7 +208,12 @@ func supervise(s session, cmd *exec.Cmd, ready, ownerAlive func() bool) error {
 	if err := os.Chown(listener.Addr().String(), s.UID, s.GID); err != nil {
 		return err
 	}
-	shutdown := make(chan struct{}, 1)
+	type control struct {
+		action string
+		result chan error
+	}
+	commands := make(chan control)
+	done := make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+s.Token {
@@ -180,16 +221,34 @@ func supervise(s session, cmd *exec.Cmd, ready, ownerAlive func() bool) error {
 			return
 		}
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/prepared":
+			if !ownerAlive() {
+				http.Error(w, "owner exited", http.StatusServiceUnavailable)
+				return
+			}
 		case r.Method == http.MethodGet && r.URL.Path == "/status":
-			if !ready() {
+			if !started.Load() || !ready() {
 				http.Error(w, "not ready", http.StatusServiceUnavailable)
 				return
 			}
-		case r.Method == http.MethodPost && r.URL.Path == "/stop":
-			stop()
+		case r.Method == http.MethodPost && (r.URL.Path == "/start" || r.URL.Path == "/stop"):
+			command := control{action: r.URL.Path, result: make(chan error, 1)}
 			select {
-			case shutdown <- struct{}{}:
-			default:
+			case commands <- command:
+			case <-done:
+				http.Error(w, "session stopped", http.StatusServiceUnavailable)
+				return
+			case <-r.Context().Done():
+				return
+			}
+			select {
+			case err := <-command.result:
+				if err != nil {
+					http.Error(w, "core startup failed", http.StatusServiceUnavailable)
+					return
+				}
+			case <-r.Context().Done():
+				return
 			}
 		default:
 			http.NotFound(w, r)
@@ -203,7 +262,9 @@ func supervise(s session, cmd *exec.Cmd, ready, ownerAlive func() bool) error {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = server.Shutdown(ctx)
+		_ = server.Close()
 	}()
+	defer close(done)
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, os.Interrupt)
 	defer signal.Stop(signals)
@@ -212,15 +273,42 @@ func supervise(s session, cmd *exec.Cmd, ready, ownerAlive func() bool) error {
 	lastReady := time.Now()
 	for {
 		select {
+		case err := <-companionFailed:
+			return err
 		case <-exited:
 			return fmt.Errorf("代理内核已退出：%v", exitError)
-		case <-shutdown:
-			return nil
+		case command := <-commands:
+			if command.action == "/stop" {
+				stop()
+				command.result <- nil
+				return nil
+			}
+			if !ownerAlive() {
+				err := fmt.Errorf("TUN 启动已取消")
+				command.result <- err
+				return err
+			}
+			if !started.Load() {
+				child, err := launch()
+				if err != nil {
+					command.result <- err
+					return err
+				}
+				watch(child)
+				lastReady = time.Now()
+			}
+			command.result <- nil
 		case <-signals:
 			return nil
 		case <-ticker.C:
 			if !ownerAlive() {
 				return nil
+			}
+			if !started.Load() {
+				if time.Since(startedAt) > 30*time.Second {
+					return fmt.Errorf("TUN 启动等待超时")
+				}
+				continue
 			}
 			if ready() {
 				lastReady = time.Now()

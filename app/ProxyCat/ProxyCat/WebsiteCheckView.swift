@@ -42,9 +42,9 @@ struct WebsiteCheckView: View {
                         if !viewModel.websiteRecoveryGroups.isEmpty {
                             Menu {
                                 ForEach(viewModel.websiteRecoveryGroups) { group in
-                                    Section(group.name) {
+                                    Section(ProxyDisplay.name(group.name)) {
                                         ForEach(group.all.filter { $0 != group.now && $0 != "REJECT" && $0 != "DIRECT" }, id: \.self) { proxy in
-                                            Button(proxy) { Task { await viewModel.changeNodeAndRecheck(group: group.name, proxy: proxy) } }
+                                            Button(ProxyDisplay.name(proxy)) { Task { await viewModel.changeNodeAndRecheck(group: group.name, proxy: proxy) } }
                                         }
                                     }
                                 }
@@ -83,7 +83,7 @@ struct WebsiteCheckView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             evidence("请求", "\(result.scheme.uppercased()) GET · \(result.host)")
                             evidence("命中规则", result.rule.isEmpty ? "未捕获" : "\(result.rule) \(result.rulePayload)")
-                            evidence("节点链", result.chains.isEmpty ? "未捕获" : result.chains.reversed().joined(separator: " → "))
+                            evidence("节点链", result.chains.isEmpty ? "未捕获" : result.chains.reversed().map(ProxyDisplay.name).joined(separator: " → "))
                             evidence("HTTP", result.statusCode == 0 ? "未收到网页响应" : String(result.statusCode))
                         }.padding(.top, 8)
                     }

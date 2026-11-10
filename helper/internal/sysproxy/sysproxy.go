@@ -81,6 +81,72 @@ func Disable() error {
 	return disable(ctx)
 }
 
+// UsesLocalPort identifies only endpoints that ProxyCat configures itself.
+// Do not infer ownership from a port number on a remote host or another port.
+func (s *Status) UsesLocalPort(port int) bool {
+	return s != nil && ((s.HTTPEnabled && localEndpoint(s.HTTPHost, s.HTTPPort, port)) ||
+		(s.HTTPSEnabled && localEndpoint(s.HTTPSHost, s.HTTPSPort, port)) ||
+		(s.SOCKSEnabled && localEndpoint(s.SOCKSHost, s.SOCKSPort, port)))
+}
+
+func localEndpoint(host string, port, ownedPort int) bool {
+	return host == "127.0.0.1" && port == ownedPort
+}
+
+// DisableOwned clears only enabled entries still pointing at ProxyCat. Read
+// each service immediately before changing it: scutil's active service alone
+// cannot establish ownership of every service, or of every proxy protocol.
+func DisableOwned(port int) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("system proxy control is only supported on macOS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), proxyChangeTimeout)
+	defer cancel()
+	return disableOwned(ctx, port)
+}
+
+func disableOwned(ctx context.Context, port int) error {
+	services, err := getNetworkServices(ctx, true)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, svc := range services {
+		for _, setting := range []struct{ get, set string }{
+			{"-getwebproxy", "-setwebproxystate"},
+			{"-getsecurewebproxy", "-setsecurewebproxystate"},
+			{"-getsocksfirewallproxy", "-setsocksfirewallproxystate"},
+		} {
+			if err := ctx.Err(); err != nil {
+				return errors.Join(append(failures, err)...)
+			}
+			output, err := exec.CommandContext(ctx, "networksetup", setting.get, svc).CombinedOutput()
+			if err != nil || strings.Contains(string(output), "Error:") {
+				if err == nil {
+					err = errors.New("networksetup reported an error")
+				}
+				failures = append(failures, fmt.Errorf("read proxy for %s: %s: %w", svc, strings.TrimSpace(string(output)), errors.Join(err, ctx.Err())))
+				continue
+			}
+			fields := map[string]string{}
+			for _, line := range strings.Split(string(output), "\n") {
+				key, value, ok := strings.Cut(line, ":")
+				if ok {
+					fields[strings.TrimSpace(key)] = strings.TrimSpace(value)
+				}
+			}
+			configuredPort, _ := strconv.Atoi(fields["Port"])
+			if fields["Enabled"] != "Yes" || !localEndpoint(fields["Server"], configuredPort, port) {
+				continue
+			}
+			if err := runNetworksetup(ctx, setting.set, svc, "off"); err != nil {
+				failures = append(failures, fmt.Errorf("disable owned proxy for %s: %w", svc, err))
+			}
+		}
+	}
+	return errors.Join(failures...)
+}
+
 func disable(ctx context.Context) error {
 	// Disabled services can still retain proxy settings from an earlier session.
 	services, err := getNetworkServices(ctx, true)

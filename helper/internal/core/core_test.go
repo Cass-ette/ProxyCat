@@ -22,8 +22,13 @@ func TestStartStop(t *testing.T) {
 		t.Fatalf("failed to create config file: %v", err)
 	}
 
-	// Test Start with /bin/sleep as a fake binary
-	pid, err := Start("/bin/sleep", configPath, logPath, "10")
+	// Ignore Mihomo's arguments and keep a real child alive. /bin/sleep rejects
+	// -f and exits immediately, which previously hid missing process reaping.
+	launcher := filepath.Join(tmpDir, "fake-core")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexec /bin/sleep 30\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	pid, err := Start(launcher, configPath, logPath)
 	if err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}

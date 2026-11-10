@@ -21,6 +21,7 @@ import (
 	"github.com/Cass-ette/ProxyCat/helper/internal/controller"
 	"github.com/Cass-ette/ProxyCat/helper/internal/core"
 	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
+	"github.com/Cass-ette/ProxyCat/helper/internal/sysproxy"
 )
 
 type session struct {
@@ -90,7 +91,11 @@ func processStart(pid int) string {
 	if pid < 2 {
 		return ""
 	}
-	b, err := exec.Command("/bin/ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	command := exec.Command("/bin/ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
+	// Authorization runs in a different environment. The same process must
+	// compare equal across user/root locale and time-zone settings.
+	command.Env = append(os.Environ(), "LC_ALL=C", "TZ=UTC")
+	b, err := command.Output()
 	if err != nil {
 		return ""
 	}
@@ -108,10 +113,19 @@ type snapshot struct {
 func capture(p paths.RuntimePaths) snapshot {
 	s := snapshot{selections: map[string]string{}}
 	s.running, _, _ = core.Status()
-	if cfg, err := Client(p).GetConfig(); err == nil {
+	return captureController(Client(p), s)
+}
+
+func captureController(c *controller.Client, s snapshot) snapshot {
+	// A local, unhealthy controller must not add two 30-second waits before
+	// we even start a handoff. Release our own idle connections before stop.
+	transport := &http.Transport{Proxy: nil}
+	defer transport.CloseIdleConnections()
+	c.SetClient(&http.Client{Transport: transport, Timeout: time.Second})
+	if cfg, err := c.GetConfig(); err == nil {
 		s.mode = cfg.Mode
 	}
-	if proxies, err := Client(p).GetProxies(); err == nil {
+	if proxies, err := c.GetProxies(); err == nil {
 		for name, proxy := range proxies {
 			if proxy.Type == "Selector" {
 				s.selections[name] = proxy.Now
@@ -121,20 +135,28 @@ func capture(p paths.RuntimePaths) snapshot {
 	return s
 }
 
-func restoreSelections(p paths.RuntimePaths, state snapshot) error {
+func restoreSelections(p paths.RuntimePaths, state snapshot, expectTUN bool) error {
 	c := Client(p)
+	return restoreController(c, state, expectTUN)
+}
+
+func restoreController(c *controller.Client, state snapshot, expectTUN bool) error {
 	c.SetClient(&http.Client{Timeout: time.Second})
 	for deadline := time.Now().Add(8 * time.Second); time.Now().Before(deadline); {
-		if _, err := c.GetConfig(); err == nil {
+		if cfg, err := c.GetConfig(); err == nil && (cfg.Tun["enable"] == true) == expectTUN {
 			for group, name := range state.selections {
-				_ = c.SelectProxy(group, name)
+				if err := c.SelectProxy(group, name); err != nil {
+					return fmt.Errorf("恢复节点选择失败：%w", err)
+				}
 			}
 			if state.mode != "" {
 				if err := c.SetMode(state.mode); err != nil {
 					return err
 				}
 			}
-			return nil
+			if err := proxyListenerReady(cfg.MixedPort); err == nil {
+				return nil
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -142,15 +164,66 @@ func restoreSelections(p paths.RuntimePaths, state snapshot) error {
 }
 
 func startNormal(p paths.RuntimePaths, state snapshot) error {
-	if _, err := core.Start(p.Mihomo, p.ConfigYAML, p.MihomoLog); err != nil {
+	return startNormalWithProgress(p, state, nil)
+}
+
+func startNormalWithProgress(p paths.RuntimePaths, state snapshot, report ProgressFunc) error {
+	running, _, err := core.Status()
+	if err != nil {
 		return err
 	}
-	return restoreSelections(p, state)
+	if !running {
+		report.send("release", "等待系统释放本地代理端口")
+		// Root-owned TUN sockets may remain unavailable to an ordinary user
+		// after the child has exited (including TCP TIME_WAIT). Confirm that
+		// both endpoints can bind before launching, instead of starting and
+		// replacing multiple cores that all fail the same bind.
+		if err := core.WaitForListenerRelease(p.ConfigYAML, 45*time.Second); err != nil {
+			return err
+		}
+	}
+	report.send("restore", "启动普通代理并验证连接入口")
+	if _, err := core.EnsureProxyReady(p.Mihomo, p.ConfigYAML, p.MihomoLog); err != nil {
+		return err
+	}
+	return restoreSelections(p, state, false)
+}
+
+func proxyListenerReady(port int) error {
+	if port <= 0 {
+		return fmt.Errorf("代理内核未提供可用的本地端口")
+	}
+	connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second)
+	if err != nil {
+		return fmt.Errorf("代理端口尚不可用：%w", err)
+	}
+	return connection.Close()
+}
+
+func waitForSession(s session, endpoint string, timeout time.Duration) error {
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		if err := request(s, http.MethodGet, endpoint); err == nil {
+			return nil
+		}
+		if b, err := os.ReadFile(filepath.Join(s.Directory, "error")); err == nil && len(b) > 0 {
+			return fmt.Errorf("TUN 启动失败：%s", strings.TrimSpace(string(b)))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if endpoint == "/prepared" {
+		return fmt.Errorf("TUN 后台服务未能及时就绪，普通代理未停止")
+	}
+	return fmt.Errorf("TUN 内核未能及时就绪")
 }
 
 // Enable asks macOS for authorization. A supervisor owns the privileged child;
-// it accepts only a stop request and exits when the owning application exits.
+// it waits for an explicit handoff and exits when the owning application exits.
 func Enable(p paths.RuntimePaths, parentPID int) (result error) {
+	return EnableWithProgress(p, parentPID, nil)
+}
+
+func EnableWithProgress(p paths.RuntimePaths, parentPID int, report ProgressFunc) (result error) {
+	report.send("prepare", "检查配置与 TUN 系统助手")
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("TUN requires macOS")
 	}
@@ -227,21 +300,15 @@ func Enable(p paths.RuntimePaths, parentPID int) (result error) {
 		return err
 	}
 	log.Close()
-	stoppedNormal := false
+	handoffStarted := false
 	defer func() {
-		if result == nil {
+		if result == nil || handoffStarted {
 			return
 		}
 		_ = os.WriteFile(filepath.Join(dir, "cancel"), nil, 0600)
 		// If authorization succeeded but startup failed, stop the supervisor before rollback.
-		if err := request(s, http.MethodPost, "/stop"); err != nil && Active(p) {
+		if _, err := stopSession(p, s, Client(p)); err != nil {
 			result = errors.Join(result, err)
-			return
-		}
-		os.Remove(marker(p))
-		os.RemoveAll(dir)
-		if stoppedNormal {
-			result = errors.Join(result, startNormal(p, state))
 		}
 	}()
 	// Validate before asking for authorization or interrupting the current core.
@@ -249,44 +316,49 @@ func Enable(p paths.RuntimePaths, parentPID int) (result error) {
 	if err = check.Run(); err != nil {
 		return fmt.Errorf("TUN 配置校验失败，原连接未改变")
 	}
-	executable, err := os.Executable()
-	if err != nil {
+	if err := prepareServiceWithProgress(s, report); err != nil {
 		return err
 	}
-	command := "/usr/bin/nohup " + shellQuote(executable) + " tun serve " + shellQuote(dir) + " </dev/null >/dev/null 2>&1 &"
-	script := "do shell script " + strconv.Quote(command) + " with administrator privileges with prompt \"ProxyCat 需要管理员权限来创建 TUN 隧道。\""
-	if output, err := exec.Command("/usr/bin/osascript", "-e", script).CombinedOutput(); err != nil {
-		if strings.Contains(string(output), "-128") {
-			return fmt.Errorf("已取消管理员授权，未开启 TUN")
-		}
-		return fmt.Errorf("TUN 管理员授权失败：%s", strings.TrimSpace(string(output)))
-	}
-	// Keep the ordinary core available throughout the authorization dialog.
-	if state.running {
-		_, pid, _ := core.Status()
-		actual, err := exec.Command("/bin/ps", "-ww", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-		if err != nil || strings.TrimSpace(string(actual)) != p.Mihomo {
-			return fmt.Errorf("运行中的内核不属于 ProxyCat，请先关闭其他代理内核")
-		}
-		if err = core.Stop(pid); err != nil {
+	handoffStarted = true
+	return handoff(state.running, handoffActions{
+		prepare: func() error { return waitForSession(s, "/prepared", 8*time.Second) },
+		stopNormal: func() (bool, error) {
+			report.send("stop", "正在交接普通代理")
+			running, pid, err := core.Status()
+			if err != nil {
+				return false, err
+			}
+			if !running {
+				return true, nil
+			}
+			if err := core.CheckOwner(pid, p.Mihomo); err != nil {
+				return false, err
+			}
+			if err := core.StopGraceful(pid, 3*time.Second); err != nil {
+				return false, err
+			}
+			return true, core.WaitStopped(pid)
+		},
+		startTunnel: func() error {
+			report.send("start", "建立 TUN 网络接口")
+			return request(s, http.MethodPost, "/start")
+		},
+		confirmTunnel: func() error {
+			report.send("verify", "确认隧道与原节点已就绪")
+			if err := waitForSession(s, "/status", 8*time.Second); err != nil {
+				return err
+			}
+			return restoreSelections(p, state, true)
+		},
+		cancelTunnel: func() error {
+			report.send("cleanup", "清理未完成的隧道")
+			_ = os.WriteFile(filepath.Join(dir, "cancel"), nil, 0600)
+			_, err := stopSession(p, s, Client(p))
 			return err
-		}
-		stoppedNormal = true
-		time.Sleep(200 * time.Millisecond)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "start"), nil, 0600); err != nil {
-		return err
-	}
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
-		if request(s, http.MethodGet, "/status") == nil {
-			return restoreSelections(p, state)
-		}
-		if b, err := os.ReadFile(filepath.Join(dir, "error")); err == nil && len(b) > 0 {
-			return fmt.Errorf("TUN 启动失败：%s", strings.TrimSpace(string(b)))
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("TUN 启动超时，已恢复普通代理")
+		},
+		restoreNormal: func() error { return startNormalWithProgress(p, state, report) },
+		disableProxy:  sysproxy.Disable,
+	})
 }
 
 // Stop does not relaunch a normal core, so quit and campus cleanup remain ordered.
@@ -303,14 +375,26 @@ func Stop(p paths.RuntimePaths) (bool, error) {
 
 func stopSession(p paths.RuntimePaths, s session, c *controller.Client) (bool, error) {
 	managed := true
-	if err := request(s, http.MethodPost, "/stop"); err != nil {
-		c.SetClient(&http.Client{Timeout: time.Second})
-		if cfg, alive := c.GetConfig(); alive == nil {
-			if cfg.Tun["enable"] == true {
-				return true, fmt.Errorf("无法关闭 TUN：%w", err)
+	// Cancellation is also observed when the control socket cannot be reached.
+	_ = os.WriteFile(filepath.Join(s.Directory, "cancel"), nil, 0600)
+	stopErr := request(s, http.MethodPost, "/stop")
+	c.SetClient(&http.Client{Timeout: time.Second})
+	cfg, configErr := c.GetConfig()
+	if configErr == nil && cfg.Tun["enable"] != true {
+		// An ordinary core may have been started after an application crash.
+		// Discard the stale TUN marker without claiming that this core stopped.
+		managed = false
+	} else if running, pid, statusErr := core.Status(); statusErr != nil {
+		return true, statusErr
+	} else if running {
+		if ownerErr := core.CheckOwner(pid, p.Mihomo); ownerErr != nil || (configErr == nil && cfg.Tun["enable"] == true) {
+			// Verify process exit even after a successful stop acknowledgement.
+			// An older installed supervisor may acknowledge before its child
+			// finishes releasing listeners. Keep cancellation until then.
+			if waitErr := core.WaitStopped(pid); waitErr != nil {
+				return true, fmt.Errorf("尚未确认 TUN 内核退出：%w", errors.Join(stopErr, waitErr))
 			}
-			// An ordinary core may have been started after an application crash.
-			// Discard the stale TUN marker without claiming that this core stopped.
+		} else {
 			managed = false
 		}
 	}
@@ -320,12 +404,18 @@ func stopSession(p paths.RuntimePaths, s session, c *controller.Client) (bool, e
 }
 
 func Disable(p paths.RuntimePaths) error {
+	return DisableWithProgress(p, nil)
+}
+
+func DisableWithProgress(p paths.RuntimePaths, report ProgressFunc) error {
+	report.send("prepare", "保存当前模式与节点")
 	state := capture(p)
+	report.send("stop", "关闭 TUN 并撤回隧道路由")
 	stopped, err := Stop(p)
 	if err != nil || !stopped {
 		return err
 	}
-	return startNormal(p, state)
+	return startNormalWithProgress(p, state, report)
 }
 
 func Restart(p paths.RuntimePaths, parentPID int) error {

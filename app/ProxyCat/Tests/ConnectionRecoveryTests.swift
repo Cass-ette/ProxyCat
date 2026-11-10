@@ -19,21 +19,26 @@ private final class Fixture {
     let defaults: UserDefaults
     let suite = "proxycat-recovery-tests-\(UUID().uuidString)"
     let helper: HelperClient
+    var now = Date(timeIntervalSince1970: 1_800_000_000)
 
     lazy var viewModel = StatusViewModel(
         helper: helper, defaults: defaults,
         wifiSSIDProvider: { [weak self] in
             guard let self else { return nil }
             return self.has("campus-arrived") ? "Campus" : "Home"
-        }, currentVersion: "0.12.4", currentReleaseNotes: "## 修复\n- 离线更新日志"
+        }, currentVersion: "0.12.4", currentReleaseNotes: "## 修复\n- 离线更新日志",
+        dateProvider: { [weak self] in self?.now ?? Date() }
     )
 
-    init(coreRunning: Bool = true) throws {
+    init(coreRunning: Bool = true, automaticUpdateChecks: Bool = false) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defaults = UserDefaults(suiteName: suite)!
         defaults.set(["Campus"], forKey: "protectedWiFiSSIDs")
         defaults.set("disconnect", forKey: "campusNetworkAction")
+        if !automaticUpdateChecks {
+            defaults.set(["checkedAt": now, "succeeded": true], forKey: "updateCheckHistory.0.12.4")
+        }
         let executable = directory.appendingPathComponent("proxyctl")
         try #"""
         #!/bin/sh
@@ -41,6 +46,18 @@ private final class Fixture {
         log="$fixture_dir/commands.log"
         echo "$*" >> "$log"
         case "$1 $2" in
+            'connections prepare')
+                if [ -f "$fixture_dir/fail-connection-prepare" ]; then exit 1; fi
+                exit 0
+                ;;
+            'connections --json')
+                if [ -f "$fixture_dir/hold-connections" ]; then
+                    touch "$fixture_dir/connections-held"
+                    while [ -f "$fixture_dir/hold-connections" ]; do sleep 0.02; done
+                fi
+                if [ -f "$fixture_dir/fail-connections" ]; then echo 'engine unavailable' >&2; exit 1; fi
+                cat "$fixture_dir/connections.json"
+                ;;
             'website-check '*)
                 if [ -f "$fixture_dir/website-result.json" ]; then cat "$fixture_dir/website-result.json"; else echo 'invalid website' >&2; exit 2; fi
                 ;;
@@ -48,6 +65,13 @@ private final class Fixture {
                 active=false
                 if [ -f "$fixture_dir/core-active" ]; then active=true; fi
                 printf '{"running":%s,"pid":42}\n' "$active"
+                ;;
+            'diagnose --json')
+                if [ -f "$fixture_dir/hold-diagnose" ]; then
+                    touch "$fixture_dir/diagnose-held"
+                    while [ -f "$fixture_dir/hold-diagnose" ]; do sleep 0.02; done
+                fi
+                echo '{"app":"ProxyCat","milestone":"test","checks":[{"name":"listener","status":"pass","message":"ready"}]}'
                 ;;
             'core start')
                 if [ -f "$fixture_dir/fail-start" ]; then
@@ -59,6 +83,11 @@ private final class Fixture {
             'core stop') rm -f "$fixture_dir/core-active" "$fixture_dir/tun-active" ;;
             'tun on')
                 if [ -f "$fixture_dir/fail-tun" ]; then echo '已取消管理员授权' >&2; exit 8; fi
+                if [ -f "$fixture_dir/hold-tun" ]; then
+                    printf '%s\n' '{"stage":"start","message":"建立 TUN 网络接口"}'
+                    touch "$fixture_dir/tun-held"
+                    while [ -f "$fixture_dir/hold-tun" ]; do sleep 0.02; done
+                fi
                 touch "$fixture_dir/core-active"
                 if [ ! -f "$fixture_dir/unready-tun" ]; then touch "$fixture_dir/tun-active"; fi
                 ;;
@@ -90,6 +119,10 @@ private final class Fixture {
                 ;;
             'groups select') ;;
             'groups list')
+                if [ -f "$fixture_dir/hold-groups" ]; then
+                    touch "$fixture_dir/groups-held"
+                    while [ -f "$fixture_dir/hold-groups" ]; do sleep 0.02; done
+                fi
                 if [ -f "$fixture_dir/nodegroups.json" ]; then cat "$fixture_dir/nodegroups.json"; exit 0; fi
                 if [ -f "$fixture_dir/enter-campus" ]; then
                     touch "$fixture_dir/campus-arrived"
@@ -124,16 +157,28 @@ private final class Fixture {
                 ;;
             'profile list')
                 if [ -f "$fixture_dir/fail-profiles" ]; then exit 8; fi
+                if [ -f "$fixture_dir/profiles.json" ]; then cat "$fixture_dir/profiles.json"; exit 0; fi
                 echo '[{"id":"saved","name":"Saved","url":"https://example.invalid/subscription","createdAt":"","updatedAt":"","active":true}]'
+                ;;
+            'profile traffic')
+                if [ -f "$fixture_dir/fail-traffic" ]; then echo 'temporary metadata failure' >&2; exit 8; fi
+                cat "$fixture_dir/traffic-$3.json"
                 ;;
             'proxy-delay Auto') echo '{"delay":42}' ;;
             'proxy-delay Proxy') echo '{"delay":43}' ;;
             'proxy-delay GLOBAL') echo '{"delay":44}' ;;
             'proxy-delay DIRECT') echo '{"delay":45}' ;;
             'self-update --check-only')
+                if [ -f "$fixture_dir/hold-check" ]; then
+                    while [ -f "$fixture_dir/hold-check" ]; do sleep 0.02; done
+                fi
                 if [ -f "$fixture_dir/fail-check" ]; then
                     echo '{"stage":"error","message":"更新检查暂时不可用，请稍后重试"}'
                     exit 1
+                fi
+                if [ -f "$fixture_dir/no-update" ]; then
+                    echo '{"stage":"done","message":"已经是最新版","releaseVersion":"0.12.4"}'
+                    exit 0
                 fi
                 printf '%s\n' '{"stage":"done","message":"发现新版本 0.13.0","newVersion":"0.13.0","releaseVersion":"0.13.0","releaseNotes":"## 新功能\n- **更新日志**：查看说明后安装\n## 修复\n- 连接测试","releaseURL":"https://github.com/Cass-ette/ProxyCat/releases/tag/v0.13.0","publishedAt":"2026-10-26T08:00:00Z"}'
                 ;;
@@ -182,6 +227,10 @@ private final class Fixture {
         let text = (try? String(contentsOf: directory.appendingPathComponent("commands.log"), encoding: .utf8)) ?? ""
         return text.split(separator: "\n").map(String.init)
     }
+
+    var updateCheckCount: Int {
+        commands.filter { $0 == "self-update --check-only --json" }.count
+    }
 }
 
 @main
@@ -203,18 +252,247 @@ struct ConnectionRecoveryTests {
         try await interruptedUpdateIsRetryable()
         try await downloadNetworkFailureIsRetryable()
         try await updateFailuresRemainReviewable()
+        try await automaticUpdatesRequireAnActiveConnection()
+        try await automaticUpdatesPreserveReviewAndSurviveRelaunch()
+        try await automaticUpdateSuccessIsThrottled()
+        try await automaticUpdateFailuresAreSilentAndRetryable()
+        try await automaticUpdateChecksDoNotOverlap()
+        try await manualCheckCanJoinABackgroundFailure()
+        try await manualUpdatesBypassAutomaticThrottling()
         try legacyUpdateEventsStillDecode()
         try releaseNotesKeepSectionsAndContent()
         try await menuBarTracksProxyState()
         try await tunFollowsConfirmedStateAndCampusPolicy()
         try await tunFailureDoesNotClaimConnection()
+        try await completedTUNSwitchDoesNotWaitForNodeRefresh()
+        try await networkChangesInvalidatePreviousDiagnosis()
+        try await lateDiagnosisCannotEraseSwitchFailure()
+        try await observedChangesInvalidateDiagnosis()
+        try await unreadableControllerInvalidatesDiagnosis()
+        try await tunHelperRemovalRequiresInactiveTunnel()
         try websiteCopyDoesNotInventFacts()
         try await websiteRecoveryMatchesEvidence()
         try await websiteGlobalCanBeRestored()
         try await websiteResultsExpireOnContextChanges()
         try await automaticNodeChangesExplainOnlyObservedFacts()
         try latencyStatesAreDistinct()
-        print("Passed 26 connection, website, node, mode, TUN, menu bar and update flow regression tests")
+        try connectionRecordsKeepRouteEvidenceAndApplicationGroups()
+        try connectionRecordsKeepBoundedRecentHistory()
+        try await connectionObservationPreservesRecordsOnFailure()
+        try await closingRecordsDiscardsPendingObservation()
+        try await unavailableProcessLookupKeepsConnectionRecords()
+        try trafficPresentationKeepsUnknownAndExhaustedStatesHonest()
+        try await trafficRefreshIsIndependentAndThrottled()
+        try await failedTrafficRefreshPreservesOnlyCachedUsage()
+        try await tunProgressArrivesBeforeTheCommandFinishes()
+        try await menuBarTrafficWarningsPreserveConnectionColors()
+        try await nodeNamesAreFormattedOnlyForDisplay()
+        print("Passed 50 connection, website, node, mode, TUN, menu bar, update and subscription traffic regression tests")
+    }
+
+    static func trafficPresentationKeepsUnknownAndExhaustedStatesHonest() throws {
+        let legacy = try JSONDecoder().decode(Profile.self, from: Data(#"{"id":"a","name":"Plan","url":"https://example.invalid","createdAt":"","updatedAt":"","active":true}"#.utf8))
+        try expect(legacy.traffic == nil && TrafficPresentation(profile: legacy).label == "流量未知", "Existing subscriptions must decode without invented usage")
+        var plan = legacy
+        plan.traffic = SubscriptionTraffic(upload: 1024 * 1024 * 1024, download: 213 * 1024 * 1024 * 1024, total: 300 * 1024 * 1024 * 1024)
+        plan.trafficCheckedAt = "2026-11-10T13:00:00Z"
+        let now = ISO8601DateFormatter().date(from: "2026-11-10T13:05:00Z")!
+        let display = TrafficPresentation(profile: plan, now: now)
+        try expect(display.label == "剩余 86 / 300 GB" && abs((display.fraction ?? -1) - 86.0 / 300.0) < 0.0001, "Battery shows remaining and total upload plus download allowance")
+        let cached = TrafficPresentation(profile: plan, refreshError: "failed", now: now)
+        try expect(cached.label == "上次剩余 86 / 300 GB", "A failed refresh must label the balance as cached")
+        plan.traffic = SubscriptionTraffic(upload: 10, download: 120, total: 100)
+        try expect(plan.traffic?.remaining == 0 && plan.traffic?.remainingFraction == 0, "Overage must clamp to empty, never wrap or become negative")
+        plan.traffic = SubscriptionTraffic(upload: Int64.max, download: Int64.max, total: Int64.max)
+        try expect(plan.traffic?.remaining == 0, "Malformed large provider counters must not overflow")
+        plan.traffic = SubscriptionTraffic(upload: 10, download: 20, total: 0)
+        try expect(TrafficPresentation(profile: plan, now: now).fraction == nil, "Zero total does not prove unlimited or full allowance")
+        plan.traffic = SubscriptionTraffic(upload: 0, download: 0, total: 100, expire: 1)
+        try expect(TrafficPresentation(profile: plan, now: now).isExpired, "Expiry is separate from byte allowance")
+    }
+
+    @MainActor
+    private static func writeTraffic(_ fixture: Fixture) throws {
+        let timestamp = ISO8601DateFormatter().string(from: fixture.now)
+        let response = "{\"profileID\":\"saved\",\"traffic\":{\"upload\":10,\"download\":20,\"total\":100},\"checkedAt\":\"\(timestamp)\"}"
+        try response.write(to: fixture.directory.appendingPathComponent("traffic-saved.json"), atomically: true, encoding: .utf8)
+    }
+
+    @MainActor
+    static func trafficRefreshIsIndependentAndThrottled() async throws {
+        let fixture = try Fixture(coreRunning: false)
+        try writeTraffic(fixture)
+        await fixture.viewModel.loadProfiles()
+        fixture.viewModel.lastError = "existing connection error"
+        await fixture.viewModel.refreshSubscriptionTraffic()
+        try expect(fixture.viewModel.activeProfile?.traffic?.remaining == 70 && !fixture.viewModel.isRefreshingTraffic, "Metadata must publish without starting the engine")
+        try expect(fixture.viewModel.lastError == "existing connection error", "Traffic refresh must not erase network failures")
+        await fixture.viewModel.refreshSubscriptionTraffic()
+        try expect(fixture.commands.filter { $0 == "profile traffic saved --json" }.count == 1, "Opening the menu repeatedly must reuse fresh account data")
+        try expect(fixture.commands.allSatisfy { $0.hasPrefix("profile ") }, "Quota reads cannot start, stop, reload or enable networking")
+    }
+
+    @MainActor
+    static func failedTrafficRefreshPreservesOnlyCachedUsage() async throws {
+        let fixture = try Fixture()
+        try writeTraffic(fixture)
+        await fixture.viewModel.loadProfiles()
+        await fixture.viewModel.refreshSubscriptionTraffic()
+        try fixture.set("fail-traffic")
+        await fixture.viewModel.refreshSubscriptionTraffic(force: true)
+        try expect(fixture.viewModel.activeProfile?.traffic?.remaining == 70 && fixture.viewModel.trafficRefreshError != nil,
+                   "A metadata outage must preserve and mark the last known balance")
+        try expect(!fixture.viewModel.isRefreshingTraffic && fixture.viewModel.lastError == nil,
+                   "Quota failure must be retryable without replacing connection errors")
+    }
+
+    @MainActor
+    static func tunProgressArrivesBeforeTheCommandFinishes() async throws {
+        let fixture = try Fixture()
+        try fixture.set("hold-tun")
+        let operation = Task { await fixture.viewModel.setTUNEnabled(true) }
+        for _ in 0..<200 {
+            if fixture.viewModel.tunProgress?.stage == "start" { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let receivedDuringSwitch = fixture.viewModel.isChangingTUN && fixture.viewModel.tunProgress?.stage == "start"
+        let hasStartTime = fixture.viewModel.tunChangeStartedAt != nil
+        try fixture.remove("hold-tun")
+        await operation.value
+        try expect(receivedDuringSwitch && hasStartTime, "Actual helper progress must reach the UI while the lifecycle command is still running")
+        try expect(fixture.viewModel.tunProgress == nil && fixture.viewModel.tunChangeStartedAt == nil && !fixture.viewModel.isChangingTUN,
+                   "A completed switch must clear its timer and progress without leaving an animation running")
+    }
+
+    @MainActor
+    static func menuBarTrafficWarningsPreserveConnectionColors() async throws {
+        let fixture = try Fixture()
+        fixture.viewModel.coreRunning = true
+        fixture.viewModel.systemProxyEnabled = true
+        var plan = Profile(id: "saved", name: "Plan", url: "", createdAt: "", updatedAt: "", active: true)
+        plan.trafficCheckedAt = ISO8601DateFormatter().string(from: Date())
+        fixture.viewModel.activeProfileID = plan.id
+        var indicators: [MenuBarIndicator] = []
+        let observer = MenuBarStatusObserver(viewModel: fixture.viewModel) { indicators.append($0) }
+        for (download, warning) in [(Int64(85), TrafficWarning.low), (95, .critical), (100, .exhausted)] {
+            plan.traffic = SubscriptionTraffic(upload: 0, download: download, total: 100)
+            fixture.viewModel.profiles = [plan]
+            try await Task.sleep(nanoseconds: 20_000_000)
+            try expect(indicators.last?.warning == warning && indicators.last?.state == .connected,
+                       "Quota badges must update independently without replacing the connected cat color")
+            try expect(indicators.last?.image()?.isTemplate == false, "The badge color must survive template rendering")
+        }
+        plan.trafficCheckedAt = "2020-01-01T00:00:00Z"
+        fixture.viewModel.profiles = [plan]
+        try await Task.sleep(nanoseconds: 20_000_000)
+        try expect(indicators.last?.warning == nil && indicators.last?.description.contains("上次剩余") == true,
+                   "Stale provider data must not claim a current low-quota warning")
+        fixture.viewModel.activeProfileID = "other"
+        try await Task.sleep(nanoseconds: 20_000_000)
+        try expect(indicators.last?.warning == nil && indicators.last?.trafficSummary == nil, "Switching profiles must remove the previous subscription’s warning")
+        withExtendedLifetime(observer) {}
+    }
+
+    @MainActor
+    static func nodeNamesAreFormattedOnlyForDisplay() async throws {
+        let raw = "\u{1F1F9}\u{1F1FC} 台湾-A"
+        try expect(ProxyDisplay.name(raw) == "\u{1F1E8}\u{1F1F3} 台湾-A", "Taiwan flags must be normalized before macOS hides the original glyph")
+        try expect(ProxyDisplay.name("台湾-A") == "\u{1F1E8}\u{1F1F3} 台湾-A", "Names without a visible flag still need the expected display flag")
+        try expect(ProxyDisplay.name("\u{1F1F8}\u{1F1EC} 新加坡-A") == "\u{1F1F8}\u{1F1EC} 新加坡-A", "Other node flags remain intact")
+        let fixture = try Fixture()
+        await fixture.viewModel.selectProxy(group: "Auto", proxy: raw)
+        try expect(fixture.commands.contains("groups select Auto \(raw)"), "Selection must send the exact original node identity to the controller")
+    }
+
+    static func connection(_ id: String, app: String = "Browser", route: String = "proxy", rule: String = "Match", payload: String = "") -> ConnectionRecord {
+        ConnectionRecord(id: id, app: app, host: "example.com", destinationPort: "443", network: "tcp", inbound: "Tun",
+                         route: route, rule: rule, rulePayload: payload, chains: route == "direct" ? ["DIRECT"] : ["Singapore A", "Proxy"],
+                         node: route == "direct" ? "DIRECT" : "Singapore A", startedAt: "")
+    }
+
+    static func connectionRecordsKeepRouteEvidenceAndApplicationGroups() throws {
+        var log = ConnectionLog()
+        let proxy = connection("a")
+        let direct = connection("b", app: "curl", route: "direct", rule: "GeoIP", payload: "CN")
+        let unknownApp = connection("c", app: "")
+        log.observe(ConnectionSnapshot(observedAt: "", connections: [proxy, direct, unknownApp]), at: Date())
+        try expect(log.groups(matching: "").count == 3 && unknownApp.appLabel == "未识别应用", "unknown apps must not be guessed")
+        try expect(log.groups(matching: "").last?.name == "未识别应用", "known application groups should appear first")
+        try expect(!proxy.reason.contains("海外") && proxy.reason.contains("默认"), "MATCH does not prove an overseas website")
+        try expect(direct.reason.contains("国内 IP") && direct.routeLabel == "直连", "direct route and CN evidence remain distinct")
+        try expect(log.groups(matching: "Singapore").flatMap(\.entries).count == 2, "node search must preserve grouping")
+        try expect(log.groups(matching: "CURL").first?.entries.count == 1, "application search must ignore case")
+        try expect(log.groups(matching: "missing").isEmpty, "search should not invent unseen traffic")
+    }
+
+    static func connectionRecordsKeepBoundedRecentHistory() throws {
+        var log = ConnectionLog()
+        let now = Date()
+        log.observe(ConnectionSnapshot(observedAt: "", connections: [connection("a"), connection("b")]), at: now)
+        log.observe(ConnectionSnapshot(observedAt: "", connections: [connection("a"), connection("a")]), at: now.addingTimeInterval(2))
+        try expect(log.entries.count == 2 && log.entries.filter(\.isActive).count == 1, "deduplicate IDs and mark vanished sockets as ended")
+        try expect(log.entries.first?.firstSeen == now && log.entries.first?.lastSeen == now.addingTimeInterval(2), "refresh must retain first observation")
+        log.clearEnded()
+        try expect(log.entries.count == 1 && log.entries[0].isActive, "clear must retain active records")
+        log.observe(ConnectionSnapshot(observedAt: "", connections: (0..<400).map { connection("new-\($0)") }), at: now.addingTimeInterval(4))
+        try expect(log.entries.count == ConnectionLog.capacity && log.entries.allSatisfy(\.isActive), "memory bound must favor current connections")
+        log.observe(ConnectionSnapshot(observedAt: "", connections: []), at: now.addingTimeInterval(6))
+        try expect(log.entries.allSatisfy { !$0.isActive }, "an empty successful snapshot must end observed connections")
+    }
+
+    @MainActor
+    static func connectionObservationPreservesRecordsOnFailure() async throws {
+        let fixture = try Fixture()
+        let snapshot = ConnectionSnapshot(observedAt: "2026-11-10T00:00:00Z", connections: [connection("a")])
+        try JSONEncoder().encode(snapshot).write(to: fixture.directory.appendingPathComponent("connections.json"))
+        await fixture.viewModel.refreshConnections()
+        try expect(fixture.viewModel.connectionLog.entries.count == 1, "helper snapshot must decode and populate records")
+        try fixture.set("fail-connections")
+        await fixture.viewModel.refreshConnections()
+        try expect(fixture.viewModel.connectionLog.entries[0].isActive && fixture.viewModel.connectionLogError != nil, "failed polling must retain stale evidence, not end connections")
+        try fixture.remove("fail-connections")
+        try JSONEncoder().encode(ConnectionSnapshot(observedAt: "", connections: [])).write(to: fixture.directory.appendingPathComponent("connections.json"))
+        await fixture.viewModel.refreshConnections()
+        try expect(fixture.viewModel.connectionLogError == nil && !fixture.viewModel.connectionLog.entries[0].isActive, "successful polling must recover and update state")
+        try expect(fixture.commands.allSatisfy { $0 == "connections --json" }, "records must never change mode, TUN or core lifecycle")
+    }
+
+    @MainActor
+    static func closingRecordsDiscardsPendingObservation() async throws {
+        let fixture = try Fixture()
+        try JSONEncoder().encode(ConnectionSnapshot(observedAt: "", connections: [connection("a")])).write(to: fixture.directory.appendingPathComponent("connections.json"))
+        try fixture.set("hold-connections")
+        fixture.viewModel.startObservingConnections()
+        fixture.viewModel.startObservingConnections()
+        for _ in 0..<100 {
+            if fixture.has("connections-held") { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        try expect(fixture.has("connections-held"), "polling did not start")
+        fixture.viewModel.stopObservingConnections()
+        try fixture.remove("hold-connections")
+        for _ in 0..<100 {
+            if !fixture.viewModel.isLoadingConnections { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        try expect(fixture.viewModel.connectionLog.entries.isEmpty && fixture.commands.count == 2, "closed window must ignore pending output and duplicate starts")
+        await fixture.viewModel.refreshConnections()
+        try expect(fixture.viewModel.connectionLog.entries.count == 1, "polling can resume after cancellation")
+    }
+
+    @MainActor
+    static func unavailableProcessLookupKeepsConnectionRecords() async throws {
+        let fixture = try Fixture()
+        try JSONEncoder().encode(ConnectionSnapshot(observedAt: "", connections: [connection("a", app: "")])).write(to: fixture.directory.appendingPathComponent("connections.json"))
+        try fixture.set("fail-connection-prepare")
+        fixture.viewModel.startObservingConnections()
+        for _ in 0..<100 {
+            if !fixture.viewModel.connectionLog.entries.isEmpty { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        fixture.viewModel.stopObservingConnections()
+        try expect(fixture.viewModel.connectionLog.entries.count == 1 && fixture.viewModel.connectionLookupNotice != nil, "process lookup failure must explain the limitation and still show connections")
+        try expect(fixture.commands == ["connections prepare", "connections --json"], "opening records may only enable attribution and read connections")
     }
 
     static func websiteFixture(_ route: String = "proxy", outcome: String = "timeout", mode: String = "rule") throws -> Data {
@@ -285,6 +563,10 @@ struct ConnectionRecoveryTests {
         fixture.viewModel.nodeChangeNotice = nil
         await fixture.viewModel.refreshStatus()
         try expect(fixture.viewModel.nodeChangeNotice == nil, "Unchanged refresh must not repeat a dismissed notice")
+        try groups("\u{1F1F9}\u{1F1FC} 台湾-A")
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.viewModel.nodeChangeNotice?.message.contains("\u{1F1E8}\u{1F1F3} 台湾-A") == true,
+                   "Automatic node changes must use the same visible flag as the node list")
         try groups("Node A")
         await fixture.viewModel.selectProxy(group: "Auto", proxy: "Node A")
         try expect(fixture.viewModel.nodeChangeNotice == nil, "Manual selection is not an automatic change")
@@ -525,6 +807,159 @@ struct ConnectionRecoveryTests {
                    "A changed release must require a new check, not offer an unreviewed install")
     }
 
+    @MainActor
+    private static func waitForAutomaticUpdate(_ fixture: Fixture, count: Int = 1) async throws {
+        for _ in 0..<300 {
+            if fixture.updateCheckCount >= count && !fixture.viewModel.isCheckingForUpdate { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        throw TestFailure(description: "Automatic update check did not finish")
+    }
+
+    @MainActor
+    static func automaticUpdatesRequireAnActiveConnection() async throws {
+        let fixture = try Fixture(coreRunning: false, automaticUpdateChecks: true)
+        try fixture.set("proxy-active")
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.updateCheckCount == 0, "A proxy switch without a running core must not trigger a check")
+        try fixture.remove("proxy-active")
+        try fixture.set("core-active")
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.updateCheckCount == 0, "An idle core with no system proxy or TUN must not trigger a check")
+        try fixture.set("tun-active")
+        await fixture.viewModel.refreshStatus()
+        try await waitForAutomaticUpdate(fixture)
+        try expect(fixture.viewModel.tunEnabled && !fixture.viewModel.systemProxyEnabled && fixture.viewModel.availableUpdateVersion == "0.13.0",
+                   "A confirmed TUN connection must also trigger automatic discovery")
+        try expect(!fixture.commands.contains(where: { $0.hasPrefix("self-update --json") }), "Automatic discovery must never install")
+    }
+
+    @MainActor
+    static func automaticUpdatesPreserveReviewAndSurviveRelaunch() async throws {
+        let fixture = try Fixture(automaticUpdateChecks: true)
+        try fixture.set("proxy-active")
+        fixture.viewModel.lastError = "Unrelated connection error"
+        await fixture.viewModel.refreshStatus()
+        try await waitForAutomaticUpdate(fixture)
+        try expect(fixture.viewModel.availableUpdateVersion == "0.13.0" && fixture.viewModel.updateReleaseNotes.contains("更新日志"),
+                   "Connecting the system proxy must discover a reviewable release")
+        try expect(fixture.viewModel.lastError == "Unrelated connection error" && fixture.viewModel.showingCurrentReleaseNotes,
+                   "Background discovery must preserve unrelated errors and the current changelog selection")
+        let reopened = StatusViewModel(helper: fixture.helper, defaults: fixture.defaults, wifiSSIDProvider: { nil }, currentVersion: "0.12.4")
+        try expect(reopened.availableUpdateVersion == "0.13.0" && reopened.updateReleaseURL != nil && reopened.updateReleaseNotes.contains("更新日志"),
+                   "Relaunch must retain a discovered version and its notes during the daily cooldown")
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.updateCheckCount == 1, "A pending update must not be repeatedly checked")
+    }
+
+    @MainActor
+    static func automaticUpdateSuccessIsThrottled() async throws {
+        let fixture = try Fixture(automaticUpdateChecks: true)
+        try fixture.set("proxy-active")
+        try fixture.set("no-update")
+        await fixture.viewModel.refreshStatus()
+        try await waitForAutomaticUpdate(fixture)
+        try expect(fixture.viewModel.updateStatus.isEmpty && fixture.viewModel.availableUpdateVersion == nil,
+                   "Already-current background results must not add noise to the menu")
+        fixture.now.addTimeInterval(23 * 60 * 60)
+        await fixture.viewModel.refreshStatus()
+        let reopened = StatusViewModel(helper: fixture.helper, defaults: fixture.defaults, wifiSSIDProvider: { nil }, currentVersion: "0.12.4", dateProvider: { fixture.now })
+        reopened.coreRunning = true
+        reopened.systemProxyEnabled = true
+        await reopened.checkForUpdate(automatically: true)
+        try expect(fixture.updateCheckCount == 1, "The daily cooldown must survive refreshes and relaunches")
+        fixture.now.addTimeInterval(60 * 60)
+        await fixture.viewModel.refreshStatus()
+        try await waitForAutomaticUpdate(fixture, count: 2)
+        let upgraded = StatusViewModel(helper: fixture.helper, defaults: fixture.defaults, wifiSSIDProvider: { nil }, currentVersion: "0.12.5", dateProvider: { fixture.now })
+        upgraded.coreRunning = true
+        upgraded.systemProxyEnabled = true
+        await upgraded.checkForUpdate(automatically: true)
+        try expect(fixture.updateCheckCount == 3, "A newly installed version must get its own initial check")
+    }
+
+    @MainActor
+    static func automaticUpdateFailuresAreSilentAndRetryable() async throws {
+        let fixture = try Fixture(automaticUpdateChecks: true)
+        try fixture.set("proxy-active")
+        try fixture.set("fail-check")
+        fixture.viewModel.lastError = "Unrelated connection error"
+        await fixture.viewModel.refreshStatus()
+        try await waitForAutomaticUpdate(fixture)
+        try expect(fixture.viewModel.updateStatus.isEmpty && !fixture.viewModel.updateFailed && fixture.viewModel.lastError == "Unrelated connection error",
+                   "Background failure must not create an error banner or erase connection errors")
+        fixture.now.addTimeInterval(29 * 60)
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.updateCheckCount == 1, "Repeated status refreshes must not hammer a failing update service")
+        fixture.now.addTimeInterval(60)
+        try fixture.remove("fail-check")
+        await fixture.viewModel.refreshStatus()
+        try await waitForAutomaticUpdate(fixture, count: 2)
+        try expect(fixture.viewModel.availableUpdateVersion == "0.13.0", "A failed check must retry after its shorter cooldown")
+    }
+
+    @MainActor
+    static func automaticUpdateChecksDoNotOverlap() async throws {
+        let fixture = try Fixture(automaticUpdateChecks: true)
+        try fixture.set("proxy-active")
+        fixture.viewModel.isInstallingUpdate = true
+        await fixture.viewModel.refreshStatus()
+        fixture.viewModel.isInstallingUpdate = false
+        fixture.viewModel.showRestartAlert = true
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.updateCheckCount == 0, "Automatic checks must not interrupt installation or a pending restart")
+        fixture.viewModel.showRestartAlert = false
+        try fixture.set("hold-check")
+        await fixture.viewModel.refreshStatus()
+        for _ in 0..<300 {
+            if fixture.updateCheckCount == 1 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try expect(fixture.updateCheckCount == 1 && fixture.viewModel.isCheckingForUpdateAutomatically, "Fixture must hold one background check in flight")
+        await fixture.viewModel.checkForUpdate()
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.updateCheckCount == 1, "A manual request and refresh must share the existing in-flight check")
+        try fixture.remove("hold-check")
+        try await waitForAutomaticUpdate(fixture)
+    }
+
+    @MainActor
+    static func manualUpdatesBypassAutomaticThrottling() async throws {
+        let fixture = try Fixture(automaticUpdateChecks: true)
+        try fixture.set("proxy-active")
+        try fixture.set("no-update")
+        await fixture.viewModel.checkForUpdate()
+        try fixture.remove("no-update")
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.updateCheckCount == 1, "A successful manual check must also suppress unnecessary automatic checks")
+        await fixture.viewModel.checkForUpdate()
+        try expect(fixture.updateCheckCount == 2 && fixture.viewModel.availableUpdateVersion == "0.13.0",
+                   "Manual checks must bypass the automatic cooldown")
+        await fixture.viewModel.installUpdate()
+        try expect(fixture.viewModel.showRestartAlert && fixture.defaults.data(forKey: "availableUpdate.0.12.4") == nil,
+                   "Successful installation must clear the cached update notice")
+    }
+
+    @MainActor
+    static func manualCheckCanJoinABackgroundFailure() async throws {
+        let fixture = try Fixture(automaticUpdateChecks: true)
+        try fixture.set("proxy-active")
+        try fixture.set("hold-check")
+        try fixture.set("fail-check")
+        await fixture.viewModel.refreshStatus()
+        for _ in 0..<300 {
+            if fixture.updateCheckCount == 1 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try expect(fixture.viewModel.isCheckingForUpdateAutomatically, "Check must initially stay in the background")
+        await fixture.viewModel.checkForUpdate()
+        try expect(!fixture.viewModel.isCheckingForUpdateAutomatically, "An explicit request must make the existing result reviewable")
+        try fixture.remove("hold-check")
+        try await waitForAutomaticUpdate(fixture)
+        try expect(fixture.updateCheckCount == 1 && fixture.viewModel.updateFailed && fixture.viewModel.updateStatus.contains("暂时不可用"),
+                   "A user joining a background request must see its failure without a duplicate request")
+    }
+
     static func legacyUpdateEventsStillDecode() throws {
         let event = try JSONDecoder().decode(UpdateEvent.self, from: Data(#"{"stage":"done","message":"已经是最新版"}"#.utf8))
         try expect(event.releaseNotes == nil && event.releaseVersion == nil, "Old helper responses remain compatible")
@@ -547,9 +982,9 @@ struct ConnectionRecoveryTests {
         try fixture.set("campus-arrived")
         await fixture.viewModel.refreshStatus()
         try expect(!fixture.viewModel.tunEnabled && !fixture.has("tun-active"), "Campus disconnect must clear TUN")
-        let enables = fixture.commands.filter { $0 == "tun on" }.count
+        let enables = fixture.commands.filter { $0 == "tun on --json" }.count
         await fixture.viewModel.setTUNEnabled(true)
-        try expect(fixture.commands.filter { $0 == "tun on" }.count == enables, "Campus policy must block TUN authorization")
+        try expect(fixture.commands.filter { $0 == "tun on --json" }.count == enables, "Campus policy must block TUN authorization")
     }
 
     @MainActor
@@ -565,10 +1000,110 @@ struct ConnectionRecoveryTests {
     }
 
     @MainActor
+    static func completedTUNSwitchDoesNotWaitForNodeRefresh() async throws {
+        let fixture = try Fixture()
+        try fixture.set("hold-groups")
+        let enable = Task { await fixture.viewModel.setTUNEnabled(true) }
+        for _ in 0..<300 {
+            if fixture.has("groups-held") { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let reachedNodeRefresh = fixture.has("groups-held")
+        let switchFinished = !fixture.viewModel.isChangingTUN
+        await fixture.viewModel.setTUNEnabled(false)
+        let disabledWhileRefreshing = fixture.commands.contains("tun off --json") && !fixture.has("tun-active")
+        try fixture.remove("hold-groups")
+        await enable.value
+        try expect(reachedNodeRefresh, "Fixture must hold node refresh after TUN is confirmed")
+        try expect(switchFinished, "A completed TUN operation must release the switch before unrelated node refresh")
+        try expect(disabledWhileRefreshing && !fixture.viewModel.tunEnabled, "Slow node refresh must not prevent turning TUN off")
+    }
+
+    @MainActor
+    static func networkChangesInvalidatePreviousDiagnosis() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        await fixture.viewModel.runDiagnose()
+        try expect(fixture.viewModel.diagnoseReport != nil, "A fresh diagnosis must be visible")
+        try fixture.set("fail-tun")
+        await fixture.viewModel.setTUNEnabled(true)
+        try expect(fixture.viewModel.diagnoseReport == nil && fixture.viewModel.diagnosisNeedsRefresh,
+                   "Even a failed switch must retire the old all-pass result")
+        try expect(fixture.viewModel.lastError != nil, "The current failure must remain visible")
+        await fixture.viewModel.runDiagnose()
+        try expect(fixture.viewModel.diagnoseReport != nil && !fixture.viewModel.diagnosisNeedsRefresh,
+                   "An explicit new diagnosis may replace the stale notice")
+        await fixture.viewModel.setMode("global")
+        try expect(fixture.viewModel.diagnoseReport == nil && fixture.viewModel.diagnosisNeedsRefresh,
+                   "A mode change must invalidate the old route's diagnosis")
+    }
+
+    @MainActor
+    static func lateDiagnosisCannotEraseSwitchFailure() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try fixture.set("hold-diagnose")
+        let diagnosis = Task { await fixture.viewModel.runDiagnose() }
+        for _ in 0..<300 {
+            if fixture.has("diagnose-held") { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try fixture.set("fail-tun")
+        await fixture.viewModel.setTUNEnabled(true)
+        let switchError = fixture.viewModel.lastError
+        try fixture.remove("hold-diagnose")
+        await diagnosis.value
+        try expect(switchError != nil && fixture.viewModel.lastError == switchError,
+                   "A late all-pass diagnosis must not erase a newer switch failure")
+        try expect(fixture.viewModel.diagnoseReport == nil && fixture.viewModel.diagnosisNeedsRefresh,
+                   "Results from before the switch cannot certify the current network")
+    }
+
+    @MainActor
+    static func observedChangesInvalidateDiagnosis() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        await fixture.viewModel.runDiagnose()
+        try fixture.set("proxy-active")
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.viewModel.diagnoseReport == nil && fixture.viewModel.diagnosisNeedsRefresh,
+                   "An externally observed proxy change must invalidate cached diagnosis")
+        await fixture.viewModel.runDiagnose()
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.viewModel.diagnoseReport != nil && !fixture.viewModel.diagnosisNeedsRefresh,
+                   "An unchanged status refresh must preserve a fresh diagnosis")
+    }
+
+    @MainActor
+    static func unreadableControllerInvalidatesDiagnosis() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        await fixture.viewModel.runDiagnose()
+        try fixture.set("fail-groups")
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.viewModel.diagnoseReport == nil && fixture.viewModel.diagnosisNeedsRefresh,
+                   "An unavailable controller must invalidate all-pass even if cached route fields stay unchanged")
+        try expect(!fixture.viewModel.proxyGroups.isEmpty && fixture.viewModel.proxyGroupsError != nil,
+                   "Cached nodes remain useful while diagnostic success is retired")
+    }
+
+    @MainActor
+    static func tunHelperRemovalRequiresInactiveTunnel() async throws {
+        let fixture = try Fixture()
+        fixture.viewModel.tunEnabled = true
+        await fixture.viewModel.uninstallTUNHelper()
+        try expect(!fixture.commands.contains("tun uninstall-helper"), "An active tunnel must block helper removal")
+        fixture.viewModel.tunEnabled = false
+        await fixture.viewModel.uninstallTUNHelper()
+        try expect(fixture.commands.contains("tun uninstall-helper") && !fixture.viewModel.isChangingTUN, "Inactive helper removal must finish without touching normal proxy")
+        try expect(!fixture.commands.contains("system-proxy off") && !fixture.commands.contains("core stop"), "Helper removal must preserve normal proxy")
+    }
+
+    @MainActor
     static func menuBarTracksProxyState() async throws {
         let fixture = try Fixture(coreRunning: false)
         var states: [MenuBarProxyState] = []
-        let observer = MenuBarStatusObserver(viewModel: fixture.viewModel) { states.append($0) }
+        let observer = MenuBarStatusObserver(viewModel: fixture.viewModel) { states.append($0.state) }
         try await Task.sleep(nanoseconds: 20_000_000)
         try expect(states.last == .off, "Menu bar starts with the system proxy off")
 

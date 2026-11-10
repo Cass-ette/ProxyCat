@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"github.com/Cass-ette/ProxyCat/helper/internal/controller"
 	"github.com/Cass-ette/ProxyCat/helper/internal/core"
 	"github.com/Cass-ette/ProxyCat/helper/internal/diagnose"
+	"github.com/Cass-ette/ProxyCat/helper/internal/guard"
 	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
 	"github.com/Cass-ette/ProxyCat/helper/internal/profile"
 	"github.com/Cass-ette/ProxyCat/helper/internal/redact"
@@ -51,9 +53,81 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		printHelp(stdout)
 		return 0
 	}
+	if needsLifecycleLock(args) {
+		p, err := paths.Default()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		unlock, err := core.LockLifecycle(p.Config)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer unlock()
+	}
 
 	switch args[0] {
 	case "tun":
+		if len(args) == 2 && args[1] == "relay" {
+			if err := tun.RunRelay(os.Stdin, stdout); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
+		if len(args) == 2 && args[1] == "install-helper" {
+			if err := tun.InstallHelper(); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
+		if len(args) == 3 && (args[1] == "service" || args[1] == "install-service" || args[1] == "remove-service") {
+			uid, err := strconv.Atoi(args[2])
+			if err == nil && uid > 0 {
+				switch args[1] {
+				case "service":
+					err = tun.RunService(uid)
+				case "install-service":
+					err = tun.InstallService(uid)
+				case "remove-service":
+					err = tun.UninstallService(uid)
+				}
+			} else {
+				err = fmt.Errorf("invalid TUN helper owner")
+			}
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
+		if len(args) == 4 && args[1] == "service-session" {
+			uid, err := strconv.Atoi(args[3])
+			if err == nil {
+				err = tun.ServeServiceSession(args[2], uid)
+			}
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
+		if len(args) == 2 && args[1] == "uninstall-helper" {
+			p, err := paths.Default()
+			if err == nil && tun.Active(p) {
+				err = fmt.Errorf("请先关闭 TUN，再卸载系统助手")
+			}
+			if err == nil {
+				err = tun.RemoveService()
+			}
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
 		if len(args) == 3 && args[1] == "serve" {
 			if err := tun.Serve(args[2]); err != nil {
 				fmt.Fprintln(stderr, err)
@@ -70,10 +144,15 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
+		var report tun.ProgressFunc
+		if jsonOutput {
+			encoder := json.NewEncoder(stdout)
+			report = func(progress tun.Progress) { _ = encoder.Encode(progress) }
+		}
 		if args[1] == "on" {
-			err = tun.Enable(p, os.Getppid())
+			err = tun.EnableWithProgress(p, os.Getppid(), report)
 		} else {
-			err = tun.Disable(p)
+			err = tun.DisableWithProgress(p, report)
 		}
 		if err != nil {
 			fmt.Fprintln(stderr, err)
@@ -138,6 +217,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		case "start":
 			return runCoreStart(stdout, stderr)
 		case "stop":
+			// An explicit stop is a disconnect, not a crash to be repaired. Clear
+			// the system proxy and its watcher before releasing the core. Internal
+			// restart paths call runCoreStop directly under the same lifecycle lock.
+			if exit := runSystemProxyOff(stdout, stderr); exit != 0 {
+				return exit
+			}
 			return runCoreStop(stdout, stderr)
 		case "restart":
 			return runCoreRestart(stdout, stderr)
@@ -147,6 +232,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "unknown core subcommand: %s\n", redact.String(args[1]))
 			return 2
 		}
+
+	case "guard":
+		for _, a := range args[1:] {
+			if a == "--watch" {
+				return runGuardWatch(stdout, stderr, jsonOutput)
+			}
+		}
+		return runGuard(stdout, stderr, jsonOutput)
 
 	case "system-proxy":
 		if len(args) < 2 {
@@ -211,6 +304,27 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		return runProxyDelay(args[1], stdout, stderr, jsonOutput)
 
+	case "connections":
+		if len(args) == 2 && args[1] == "prepare" {
+			if err := runtimeController().EnableConnectionProcessLookup(context.Background()); err != nil {
+				fmt.Fprintln(stderr, "应用识别暂不可用；仍可查看未识别应用的连接")
+				return 1
+			}
+			return 0
+		}
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "connections takes no arguments")
+			return 2
+		}
+		result, err := runtimeController().GetConnections(context.Background())
+		if err != nil {
+			fmt.Fprintln(stderr, "无法读取连接记录，请确认代理引擎正在运行")
+			return 1
+		}
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			return 1
+		}
+		return 0
 	case "website-check":
 		if len(args) != 2 {
 			fmt.Fprintln(stderr, "website-check requires a URL")
@@ -256,6 +370,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		switch args[1] {
 		case "list":
 			return runProfileList(stdout, stderr, jsonOutput)
+		case "traffic":
+			if len(args) != 3 {
+				fmt.Fprintln(stderr, "profile traffic requires <id>")
+				return 2
+			}
+			return runProfileTraffic(args[2], stdout, stderr)
 		case "activate":
 			if len(args) < 3 {
 				fmt.Fprintf(stderr, "profile activate requires <id>\n")
@@ -278,6 +398,27 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		printHelp(stderr)
 		return 2
 	}
+}
+
+func needsLifecycleLock(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "bootstrap" {
+		return true
+	}
+	if len(args) < 2 {
+		return false
+	}
+	switch args[0] {
+	case "tun":
+		return args[1] == "on" || args[1] == "off" || args[1] == "install-helper" || args[1] == "uninstall-helper"
+	case "core":
+		return args[1] == "start" || args[1] == "stop" || args[1] == "restart"
+	case "system-proxy":
+		return args[1] == "on" || args[1] == "off"
+	}
+	return false
 }
 
 func runtimeController() *controller.Client {
@@ -453,7 +594,9 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl subscription probe <url> [--json]")
 	fmt.Fprintln(w, "  proxyctl config generate")
 	fmt.Fprintln(w, "  proxyctl core {install|start|stop|restart|status}")
+	fmt.Fprintln(w, "  proxyctl tun {on|off|install-helper|uninstall-helper}")
 	fmt.Fprintln(w, "  proxyctl system-proxy {on|off|status}")
+	fmt.Fprintln(w, "  proxyctl guard [--json] [--watch]")
 	fmt.Fprintln(w, "  proxyctl mode {status|set <rule|global|direct>}")
 	fmt.Fprintln(w, "  proxyctl groups [list]")
 	fmt.Fprintln(w, "  proxyctl groups delay [--json]")
@@ -461,10 +604,13 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl proxy-delay <name> [--json]")
 	fmt.Fprintln(w, "  proxyctl test")
 	fmt.Fprintln(w, "  proxyctl website-check <url> [--json]")
+	fmt.Fprintln(w, "  proxyctl connections [--json]")
+	fmt.Fprintln(w, "  proxyctl connections prepare")
 	fmt.Fprintln(w, "  proxyctl self-update [--json] [--check-only]")
 	fmt.Fprintln(w, "  proxyctl update [--json] [--check-only]")
 	fmt.Fprintln(w, "  proxyctl select <group> <proxy>")
 	fmt.Fprintln(w, "  proxyctl profile list [--json]")
+	fmt.Fprintln(w, "  proxyctl profile traffic <id> [--json]")
 	fmt.Fprintln(w, "  proxyctl profile activate <id>")
 	fmt.Fprintln(w, "  proxyctl profile delete <id>")
 }
@@ -501,7 +647,7 @@ func runCoreStart(stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	pid, err := core.Start(runtimePaths.Mihomo, runtimePaths.ConfigYAML, runtimePaths.MihomoLog)
+	pid, err := core.EnsureProxyReady(runtimePaths.Mihomo, runtimePaths.ConfigYAML, runtimePaths.MihomoLog)
 	if err != nil {
 		fmt.Fprintf(stderr, "start mihomo: %v\n", err)
 		return 1
@@ -533,8 +679,21 @@ func runCoreStop(stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	if err := core.Stop(pid); err != nil {
+	p, err := paths.Default()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := core.CheckOwner(pid, p.Mihomo); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := core.StopGraceful(pid, 3*time.Second); err != nil {
 		fmt.Fprintf(stderr, "stop mihomo: %v\n", err)
+		return 1
+	}
+	if err := core.WaitStopped(pid); err != nil {
+		fmt.Fprintln(stderr, err)
 		return 1
 	}
 
@@ -586,13 +745,111 @@ func runCoreStatusJSON(stdout io.Writer, stderr io.Writer, jsonOutput bool) int 
 	return 0
 }
 
+// Tests replace the direct TCP probes as well as system-command side effects.
+var (
+	systemProxyPortOpen = guard.PortOpen
+	systemProxyWaitPort = guard.WaitForPort
+)
+
+// systemProxyEnableOps keeps enable ordering testable without OS mutations.
+type systemProxyEnableOps struct {
+	portOpen     func(int, time.Duration) bool
+	waitPort     func(int, time.Duration, time.Duration) bool
+	tunActive    func(paths.RuntimePaths) bool
+	startCore    func(paths.RuntimePaths) error
+	startWatch   func(string) error
+	enable       func(int) error
+	disableOwned func(int) error
+}
+
+func enableSystemProxy(p paths.RuntimePaths, port int, ops systemProxyEnableOps) error {
+	if !ops.portOpen(port, 800*time.Millisecond) {
+		if ops.tunActive(p) {
+			return fmt.Errorf("TUN is active but local proxy port %d is not ready", port)
+		}
+		if err := ops.startCore(p); err != nil {
+			return fmt.Errorf("core cannot be started: %w", err)
+		}
+		if !ops.waitPort(port, 5*time.Second, 800*time.Millisecond) {
+			return fmt.Errorf("local proxy port %d is not ready", port)
+		}
+	}
+	// The guard must answer its own health handshake before any system setting
+	// changes. It does not need the lifecycle lock to answer that handshake.
+	if err := ops.startWatch(p.Base); err != nil {
+		return fmt.Errorf("watchdog is not ready: %w", err)
+	}
+	if err := ops.enable(port); err != nil {
+		// Enable can fail after changing only some services. Remove just our
+		// entries and keep the watcher available if cleanup also fails.
+		return errors.Join(err, ops.disableOwned(port))
+	}
+	return nil
+}
+
 func runSystemProxyOn(stdout io.Writer, stderr io.Writer) int {
-	port := 7890
-	if err := sysproxy.Enable(port); err != nil {
-		fmt.Fprintf(stderr, "enable system proxy: %v\n", err)
+	p, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+	const port = 7890
+	err = enableSystemProxy(p, port, systemProxyEnableOps{
+		portOpen: systemProxyPortOpen, waitPort: systemProxyWaitPort,
+		tunActive: tun.Active,
+		startCore: func(p paths.RuntimePaths) error {
+			_, err := core.EnsureProxyReady(p.Mihomo, p.ConfigYAML, p.MihomoLog)
+			return err
+		},
+		startWatch: spawnGuardWatch, enable: sysproxy.Enable,
+		disableOwned: sysproxy.DisableOwned,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "refusing to enable system proxy: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "System proxy enabled (127.0.0.1:%d)\n", port)
+	return 0
+}
+
+func runGuard(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+
+	result, err := guard.Reconcile(guard.Options{Paths: runtimePaths})
+	if err != nil {
+		// Still emit what we observed: the caller may be a log the user reads
+		// after the fact, where the failure reason matters more than the fix.
+		if jsonOutput {
+			_ = json.NewEncoder(stdout).Encode(result)
+		}
+		fmt.Fprintf(stderr, "guard: %v\n", err)
+		return 1
+	}
+
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			fmt.Fprintf(stderr, "encode guard result: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	if result.Action == guard.ActionNoop {
+		fmt.Fprintln(stdout, "No ProxyCat system proxy to guard")
+		return 0
+	}
+	if result.Action == guard.ActionHealthy {
+		// Keep the healthy case quiet unless explicitly requested as JSON.
+		return 0
+	}
+	fmt.Fprintf(stdout, "%s (port %d, failures %d)\n", result.Action, result.Port, result.Failures)
+	if result.Detail != "" {
+		fmt.Fprintf(stdout, "  detail: %s\n", result.Detail)
+	}
 	return 0
 }
 
@@ -600,6 +857,12 @@ func runSystemProxyOff(stdout io.Writer, stderr io.Writer) int {
 	if err := sysproxy.Disable(); err != nil {
 		fmt.Fprintf(stderr, "disable system proxy: %v\n", err)
 		return 1
+	}
+	// The watchdog exists only to defend a switch that is turned on. Once the
+	// switch is off it has nothing to defend, and leaving it running would keep a
+	// process alive forever for no reason.
+	if p, err := paths.Default(); err == nil {
+		stopGuardWatch(p.Base)
 	}
 	fmt.Fprintln(stdout, "System proxy disabled")
 	return 0
@@ -1087,6 +1350,9 @@ func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 				fmt.Fprintf(stdout, "Profile %s: write failed: %v\n", p.ID, err)
 				continue
 			}
+			if _, err := profile.SaveTraffic(runtimePaths.ProfilesDir, p, probe.Traffic, time.Now()); err != nil {
+				fmt.Fprintln(stderr, "流量信息未能缓存，可稍后刷新")
+			}
 			fmt.Fprintf(stdout, "Profile %s (%s): updated\n", p.ID, p.Name)
 		}
 		if err := profile.SaveAll(runtimePaths.ProfilesDir, profiles); err != nil {
@@ -1275,9 +1541,49 @@ func runConfigGenerateForProfile(profileID string, stdout io.Writer, stderr io.W
 		fmt.Fprintf(stderr, "write profile config: %v\n", err)
 		return 1
 	}
+	if _, err := profile.SaveTraffic(runtimePaths.ProfilesDir, *target, probe.Traffic, time.Now()); err != nil {
+		fmt.Fprintln(stderr, "流量信息未能缓存，可稍后刷新")
+	}
 
 	fmt.Fprintf(stdout, "Config generated: %s\n", profileConfigPath)
 	return 0
+}
+
+func runProfileTraffic(id string, stdout, stderr io.Writer) int {
+	p, err := paths.Default()
+	if err != nil {
+		fmt.Fprintln(stderr, "无法读取配置路径")
+		return 1
+	}
+	profiles, err := profile.LoadAll(p.ProfilesDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "无法读取订阅配置")
+		return 1
+	}
+	for _, entry := range profiles {
+		if entry.ID != id {
+			continue
+		}
+		client := updateHTTPClient()
+		client.Timeout = 12 * time.Second
+		defer client.CloseIdleConnections()
+		traffic, err := subscription.FetchTraffic(client, entry.URL)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		result, err := profile.SaveTraffic(p.ProfilesDir, entry, traffic, time.Now())
+		if err != nil {
+			fmt.Fprintln(stderr, "暂时无法保存流量信息，请稍后重试")
+			return 1
+		}
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintln(stderr, "订阅配置已不存在，请重新选择")
+	return 1
 }
 
 func runProfileList(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {

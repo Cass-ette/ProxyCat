@@ -36,6 +36,7 @@ type ProbeResult struct {
 	Attempts        []ProbeAttempt `json:"attempts"`
 	Selected        *ProbeAttempt  `json:"selected,omitempty"`
 	SelectedContent []byte         `json:"-"`
+	Traffic         *Traffic       `json:"traffic,omitempty"`
 	Message         string         `json:"message,omitempty"`
 	SuggestedFix    string         `json:"suggestedFix,omitempty"`
 }
@@ -57,13 +58,14 @@ func Probe(client HTTPClient, rawURL string) ProbeResult {
 	result := ProbeResult{URL: redact.URL(rawURL)}
 
 	for _, userAgent := range ProbeUserAgents {
-		content, httpStatus, err := downloadForProbe(client, rawURL, userAgent)
+		content, httpStatus, traffic, err := downloadForProbe(client, rawURL, userAgent)
 		attempt := classifyAttempt(userAgent, httpStatus, content, err)
 		result.Attempts = append(result.Attempts, attempt)
 		if isBetterAttempt(attempt, result.Selected) {
 			copyAttempt := attempt
 			result.Selected = &copyAttempt
 			result.SelectedContent = content
+			result.Traffic = traffic
 		}
 	}
 
@@ -73,24 +75,24 @@ func Probe(client HTTPClient, rawURL string) ProbeResult {
 	return result
 }
 
-func downloadForProbe(client HTTPClient, rawURL string, userAgent string) ([]byte, int, error) {
+func downloadForProbe(client HTTPClient, rawURL string, userAgent string) ([]byte, int, *Traffic, error) {
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("create request: %w", err)
+		return nil, 0, nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("download: %w", err)
+		return nil, 0, nil, fmt.Errorf("download: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("download: status %d", resp.StatusCode)
+		return nil, resp.StatusCode, nil, fmt.Errorf("download: status %d", resp.StatusCode)
 	}
 	content, err := readLimitedBody(resp.Body)
-	return content, resp.StatusCode, err
+	return content, resp.StatusCode, ParseTraffic(resp.Header.Get("Subscription-Userinfo")), err
 }
 
 func readLimitedBody(body io.Reader) ([]byte, error) {

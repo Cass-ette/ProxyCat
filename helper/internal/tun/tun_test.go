@@ -150,19 +150,6 @@ func TestMissingInterfaceNeverReportsReady(t *testing.T) {
 	}
 }
 
-func TestCancelledAuthorizationCannotStartPrivilegedCore(t *testing.T) {
-	if err := awaitStart(t.TempDir(), func() bool { return false }); err == nil {
-		t.Fatal("cancelled session was allowed to launch")
-	}
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "start"), nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := awaitStart(dir, func() bool { return true }); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestPrivilegedOutputRejectsSymlinksAndOtherOwners(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "output")

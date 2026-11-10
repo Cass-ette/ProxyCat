@@ -52,11 +52,18 @@ func (p *connectionPort) UnmarshalJSON(b []byte) error {
 }
 
 type trackedConnection struct {
+	ID       string `json:"id"`
+	Start    string `json:"start"`
 	Metadata struct {
 		SourceIP        string         `json:"sourceIP"`
 		SourcePort      connectionPort `json:"sourcePort"`
 		DestinationPort connectionPort `json:"destinationPort"`
 		Host            string         `json:"host"`
+		DestinationIP   string         `json:"destinationIP"`
+		Process         string         `json:"process"`
+		ProcessPath     string         `json:"processPath"`
+		Network         string         `json:"network"`
+		Type            string         `json:"type"`
 	} `json:"metadata"`
 	Chains      []string `json:"chains"`
 	Rule        string   `json:"rule"`

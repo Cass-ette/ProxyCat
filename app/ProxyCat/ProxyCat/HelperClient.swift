@@ -65,6 +65,19 @@ private final class UpdateOutputReader: @unchecked Sendable {
     }
 }
 
+private final class TUNOutputReader {
+    private var consumedLines = 0
+
+    func events(in data: Data) -> [TUNProgress] {
+        // Only complete NDJSON lines are observable while the child writes.
+        let lines = data.split(separator: 10, omittingEmptySubsequences: false)
+        let count = max(0, lines.count - 1)
+        guard count > consumedLines else { return [] }
+        defer { consumedLines = count }
+        return lines[consumedLines..<count].compactMap { try? JSONDecoder().decode(TUNProgress.self, from: Data($0)) }
+    }
+}
+
 actor HelperClient {
     static let shared = HelperClient()
 
@@ -113,7 +126,8 @@ actor HelperClient {
         return nil
     }
 
-    private func runCommand(_ args: [String], duringShutdown: Bool = false, duringCampusDisconnect: Bool = false, allowFailureOutput: Bool = false) async -> Result<Data, HelperError> {
+    private func runCommand(_ args: [String], duringShutdown: Bool = false, duringCampusDisconnect: Bool = false, allowFailureOutput: Bool = false,
+                            onTUNProgress: (@MainActor @Sendable (TUNProgress) -> Void)? = nil) async -> Result<Data, HelperError> {
         guard shutdownTask == nil || duringShutdown else {
             return .failure(.shuttingDown)
         }
@@ -201,7 +215,26 @@ actor HelperClient {
             lifecycleCommands[id] = command
         }
         defer { lifecycleCommands[id] = nil }
-        return await command.value
+        // Keep regular output files (no pipe capacity deadlock) and observe the
+        // small progress stream without blocking the actor or the main thread.
+        let reader = TUNOutputReader()
+        let progressTask = onTUNProgress.map { handler in
+            Task {
+                while !Task.isCancelled {
+                    if let data = try? Data(contentsOf: outputURL) {
+                        for event in reader.events(in: data) { await handler(event) }
+                    }
+                    do { try await Task.sleep(nanoseconds: 150_000_000) }
+                    catch { break }
+                }
+            }
+        }
+        let result = await command.value
+        progressTask?.cancel()
+        if case .success(let data) = result, let onTUNProgress {
+            for event in reader.events(in: data) { await onTUNProgress(event) }
+        }
+        return result
     }
 
     func shutdown() async -> Result<Void, HelperError> {
@@ -320,8 +353,12 @@ actor HelperClient {
         return result.map { _ in () }
     }
 
-    func setTUNEnabled(_ enabled: Bool) async -> Result<Void, HelperError> {
-        await runCommand(["tun", enabled ? "on" : "off"]).map { _ in () }
+    func setTUNEnabled(_ enabled: Bool, onProgress: (@MainActor @Sendable (TUNProgress) -> Void)? = nil) async -> Result<Void, HelperError> {
+        await runCommand(["tun", enabled ? "on" : "off", "--json"], onTUNProgress: onProgress).map { _ in () }
+    }
+
+    func uninstallTUNHelper() async -> Result<Void, HelperError> {
+        await runCommand(["tun", "uninstall-helper"]).map { _ in () }
     }
 
     func checkWebsite(_ input: String) async -> Result<WebsiteCheckResult, HelperError> {
@@ -330,6 +367,18 @@ actor HelperClient {
             do { return .success(try JSONDecoder().decode(WebsiteCheckResult.self, from: data)) }
             catch { return .failure(.decodingFailed(error)) }
         }
+    }
+
+    func getConnections() async -> Result<ConnectionSnapshot, HelperError> {
+        let result = await runCommand(["connections", "--json"])
+        return result.flatMap { data in
+            do { return .success(try JSONDecoder().decode(ConnectionSnapshot.self, from: data)) }
+            catch { return .failure(.decodingFailed(error)) }
+        }
+    }
+
+    func prepareConnectionObservation() async -> Result<Void, HelperError> {
+        await runCommand(["connections", "prepare"]).map { _ in () }
     }
 
     func testConnection() async -> Result<TestResult, HelperError> {
@@ -532,6 +581,14 @@ actor HelperClient {
             } catch {
                 return .failure(.decodingFailed(error))
             }
+        }
+    }
+
+    func refreshSubscriptionTraffic(profileID: String) async -> Result<SubscriptionTrafficSnapshot, HelperError> {
+        let result = await runCommand(["profile", "traffic", profileID, "--json"])
+        return result.flatMap { data in
+            do { return .success(try JSONDecoder().decode(SubscriptionTrafficSnapshot.self, from: data)) }
+            catch { return .failure(.decodingFailed(error)) }
         }
     }
 

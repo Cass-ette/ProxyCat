@@ -31,7 +31,7 @@ private final class Fixture {
             guard let self = self else { return false }
             self.prompts += 1
             return self.acceptPrompt
-        }
+        }, currentVersion: "0.12.4"
     )
 
     init(action: CampusNetworkAction = .disconnect, active: Bool = true, enabled: Bool = true) throws {
@@ -41,6 +41,8 @@ private final class Fixture {
         defaults.set(["Campus"], forKey: "protectedWiFiSSIDs")
         defaults.set(action.rawValue, forKey: "campusNetworkAction")
         defaults.set(enabled, forKey: "campusProtectionEnabled")
+        // Keep campus assertions isolated from the independently tested background updater.
+        defaults.set(["checkedAt": Date(), "succeeded": true], forKey: "updateCheckHistory.0.12.4")
         let executable = directory.appendingPathComponent("proxyctl")
         try #"""
         #!/bin/sh

@@ -69,13 +69,58 @@ enum MenuBarProxyState: Equatable {
     }
 }
 
+struct MenuBarIndicator: Equatable {
+    let state: MenuBarProxyState
+    var warning: TrafficWarning? = nil
+    var trafficSummary: String? = nil
+    var transitionDescription: String? = nil
+
+    var description: String {
+        ([transitionDescription ?? state.description] + [warning?.message, trafficSummary].compactMap { $0 }).joined(separator: "\n")
+    }
+
+    func image() -> NSImage? {
+        guard let warning else { return state.image() }
+        let symbol = NSImage(systemSymbolName: state.symbol, accessibilityDescription: description)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [state.color ?? .labelColor]))
+        let badge: NSColor = warning == .low ? .systemYellow : warning == .critical ? .systemOrange : .systemRed
+        let image = NSImage(size: NSSize(width: 23, height: 18), flipped: false) { _ in
+            symbol?.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18))
+            let dot = NSBezierPath(ovalIn: NSRect(x: 16, y: 1, width: 6, height: 6))
+            NSColor.windowBackgroundColor.setStroke()
+            dot.lineWidth = 1.5
+            dot.stroke()
+            badge.setFill()
+            dot.fill()
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+}
+
 @MainActor
 final class MenuBarStatusObserver {
     private var observation: AnyCancellable?
 
-    init(viewModel: StatusViewModel, onChange: @escaping (MenuBarProxyState) -> Void) {
-        observation = Publishers.CombineLatest4(viewModel.$coreRunning, viewModel.$systemProxyEnabled, viewModel.$currentMode, viewModel.$tunEnabled)
+    init(viewModel: StatusViewModel, onChange: @escaping (MenuBarIndicator) -> Void) {
+        let state = Publishers.CombineLatest4(viewModel.$coreRunning, viewModel.$systemProxyEnabled, viewModel.$currentMode, viewModel.$tunEnabled)
             .map { MenuBarProxyState(running: $0, enabled: $1, mode: $2, tunEnabled: $3) }
+        let traffic = Publishers.CombineLatest3(viewModel.$profiles, viewModel.$activeProfileID, viewModel.$trafficRefreshError)
+            .map { profiles, activeID, error in
+                TrafficPresentation(profile: profiles.first { $0.id == activeID }, refreshError: error)
+            }
+        let transition = Publishers.CombineLatest(viewModel.$tunChangeTarget, viewModel.$tunProgress)
+            .map { target, progress -> String? in
+                guard let target else { return nil }
+                return "\(target ? "正在开启 TUN" : "正在关闭 TUN") · \(progress?.message ?? "正在准备")"
+            }
+        observation = Publishers.CombineLatest3(state, traffic, transition)
+            .map { state, traffic, transition in
+                MenuBarIndicator(state: state, warning: traffic.warning,
+                                 trafficSummary: traffic.traffic == nil ? nil : traffic.label,
+                                 transitionDescription: transition)
+            }
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink(receiveValue: onChange)

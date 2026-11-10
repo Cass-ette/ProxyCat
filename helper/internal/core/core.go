@@ -2,11 +2,15 @@
 package core
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // Start launches a process with the given binary path, config path, and log path.
@@ -33,6 +37,9 @@ func Start(binPath, configPath, logPath string, extraArgs ...string) (int, error
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("failed to start process: %w", err)
 	}
+	// A long-lived guard can start and later replace this child. Reap it rather
+	// than leaving a zombie that process-name lookup mistakes for a live core.
+	go func() { _ = cmd.Wait() }()
 
 	return cmd.Process.Pid, nil
 }
@@ -52,6 +59,72 @@ func Stop(pid int) error {
 	return nil
 }
 
+// StopGraceful asks the process to exit and only escalates to SIGKILL when it
+// ignores the request. Always wait for process exit before starting a successor;
+// a successfully sent signal alone does not establish listener availability.
+func StopGraceful(pid int, timeout time.Duration) error {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("failed to find process %d: %w", pid, err)
+	}
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return fmt.Errorf("signal process %d: %w", pid, err)
+	}
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		if processStopped(pid) {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("kill process %d: %w", pid, err)
+	}
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if processStopped(pid) {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("process %d is still running", pid)
+}
+
+// ProbePort reports whether something accepts TCP connections on a local port.
+// This is the only honest readiness signal: a mihomo process that failed to
+// bind its port stays alive and still answers pgrep.
+func ProbePort(port int, timeout time.Duration) bool {
+	if port <= 0 {
+		return false
+	}
+	if timeout <= 0 {
+		timeout = 400 * time.Millisecond
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// WaitForPort polls until the port accepts connections or the deadline passes.
+func WaitForPort(port int, total, perAttempt time.Duration) bool {
+	if total <= 0 {
+		total = 8 * time.Second
+	}
+	for deadline := time.Now().Add(total); ; {
+		if ProbePort(port, perAttempt) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // Status checks if the Mihomo process is currently running.
 // Uses pgrep -x mihomo to find the process.
 // If multiple processes exist, returns the first one (oldest).
@@ -60,8 +133,11 @@ func Status() (bool, int, error) {
 	// Run pgrep -x mihomo to find the process
 	output, err := exec.Command("pgrep", "-x", "mihomo").Output()
 	if err != nil {
-		// No process found
-		return false, 0, nil
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return false, 0, nil
+		}
+		return false, 0, fmt.Errorf("check running mihomo: %w", err)
 	}
 
 	// Parse PID from output (handle multiple lines - take first)

@@ -19,7 +19,7 @@ struct UpdateView: View {
             ScrollView {
                 VStack(spacing: 22) {
                     header
-                    if viewModel.isCheckingForUpdate {
+                    if viewModel.isCheckingForUpdate && !viewModel.isCheckingForUpdateAutomatically {
                         ProgressView("正在检查新版本…")
                             .padding(.vertical, 32)
                     } else if notes.isEmpty {

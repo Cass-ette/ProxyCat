@@ -147,4 +147,49 @@ rules:
 			t.Fatalf("%s changed rule selection: %+v (error %v)", mode, proxies["Rule Proxy"], err)
 		}
 	}
+
+	// Attribution is independently hot-patched; verify it with an actual held
+	// socket while keeping all traffic on this isolated core's loopback ports.
+	before, err := client.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.EnableConnectionProcessLookup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := client.GetConfig()
+	if err != nil || after.Mode != before.Mode || after.MixedPort != before.MixedPort || after.Tun["enable"] == true {
+		t.Fatal("process attribution changed routing, listener or TUN state")
+	}
+	conn, err := net.DialTimeout("tcp", localProxy.Host, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	originURL, _ := url.Parse(origin.URL)
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", originURL.Host, originURL.Host)
+	request := &http.Request{Method: http.MethodConnect}
+	response, err := http.ReadResponse(bufio.NewReader(conn), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatalf("held socket: %d", response.StatusCode)
+	}
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		snapshot, err := client.GetConnections(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range snapshot.Connections {
+			if record.App != "" && record.Route == "proxy" && record.Node == "Test Node" {
+				return
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	last, _ := client.GetConnections(context.Background())
+	t.Fatalf("isolated held socket did not expose application and route evidence: %+v", last.Connections)
 }

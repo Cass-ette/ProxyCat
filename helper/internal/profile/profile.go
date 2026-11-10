@@ -8,15 +8,19 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/Cass-ette/ProxyCat/helper/internal/subscription"
 )
 
 type Profile struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	URL       string    `json:"url"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	Active    bool      `json:"active"`
+	ID               string                `json:"id"`
+	Name             string                `json:"name"`
+	URL              string                `json:"url"`
+	CreatedAt        time.Time             `json:"createdAt"`
+	UpdatedAt        time.Time             `json:"updatedAt"`
+	Active           bool                  `json:"active"`
+	Traffic          *subscription.Traffic `json:"traffic,omitempty"`
+	TrafficCheckedAt *time.Time            `json:"trafficCheckedAt,omitempty"`
 }
 
 const indexFile = "profiles.json"
@@ -34,6 +38,9 @@ func LoadAll(profilesDir string) ([]Profile, error) {
 	if err := json.Unmarshal(data, &profiles); err != nil {
 		return nil, err
 	}
+	for i := range profiles {
+		loadTraffic(profilesDir, &profiles[i])
+	}
 	return profiles, nil
 }
 
@@ -41,7 +48,12 @@ func SaveAll(profilesDir string, profiles []Profile) error {
 	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(profiles, "", "  ")
+	persisted := make([]Profile, len(profiles))
+	copy(persisted, profiles)
+	for i := range persisted {
+		persisted[i].Traffic, persisted[i].TrafficCheckedAt = nil, nil
+	}
+	data, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
 		return err
 	}

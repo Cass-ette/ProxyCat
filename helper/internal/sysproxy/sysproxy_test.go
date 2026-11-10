@@ -89,6 +89,67 @@ exec /bin/sleep 10
 	}
 }
 
+func TestDisableOwnedPreservesForeignAndChangedSettings(t *testing.T) {
+	logPath := fakeNetworksetup(t, `
+if [ "$1" = "-listallnetworkservices" ]; then
+    printf 'An asterisk denotes a disabled service.\nWi-Fi\nUSB LAN\n*Old Wi-Fi\n'
+    exit 0
+fi
+case "$1" in
+    -get*)
+        if [ "$2" = 'Wi-Fi' ] && [ "$1" = '-getwebproxy' ]; then
+            printf 'Enabled: Yes\nServer: 127.0.0.1\nPort: 7890\n'
+        elif [ "$2" = 'Old Wi-Fi' ] && [ "$1" = '-getsocksfirewallproxy' ]; then
+            printf 'Enabled: Yes\nServer: 127.0.0.1\nPort: 7890\n'
+        elif [ "$1" = '-getsecurewebproxy' ]; then
+            printf 'Enabled: Yes\nServer: company.example\nPort: 7890\n'
+        elif [ "$1" = '-getsocksfirewallproxy' ]; then
+            printf 'Enabled: Yes\nServer: 127.0.0.1\nPort: 1080\n'
+        else
+            printf 'Enabled: No\nServer: 127.0.0.1\nPort: 7890\n'
+        fi
+        exit 0
+        ;;
+esac
+printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$PROXYCAT_TEST_COMMAND_LOG"
+`)
+	if err := disableOwned(context.Background(), 7890); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "-setwebproxystate|Wi-Fi|off\n-setsocksfirewallproxystate|Old Wi-Fi|off\n"
+	if string(data) != want {
+		t.Fatalf("cleanup changed foreign/disabled endpoints or missed an inactive service:\n%s", data)
+	}
+}
+
+func TestDisableOwnedContinuesAfterReadFailure(t *testing.T) {
+	logPath := fakeNetworksetup(t, `
+if [ "$1" = "-listallnetworkservices" ]; then
+    printf 'An asterisk denotes a disabled service.\nWi-Fi\n'
+    exit 0
+fi
+if [ "$1" = '-getwebproxy' ]; then
+    echo 'Error: service temporarily unavailable'
+    exit 0
+fi
+case "$1" in
+    -get*) printf 'Enabled: Yes\nServer: 127.0.0.1\nPort: 7890\n'; exit 0 ;;
+esac
+printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$PROXYCAT_TEST_COMMAND_LOG"
+`)
+	if err := disableOwned(context.Background(), 7890); err == nil || !strings.Contains(err.Error(), "temporarily unavailable") {
+		t.Fatalf("lost read failure: %v", err)
+	}
+	data, _ := os.ReadFile(logPath)
+	if string(data) != "-setsecurewebproxystate|Wi-Fi|off\n-setsocksfirewallproxystate|Wi-Fi|off\n" {
+		t.Fatalf("cleanup skipped other protocols or changed unreadable endpoint: %s", data)
+	}
+}
+
 func TestParseScutilOutput(t *testing.T) {
 	tests := []struct {
 		name     string

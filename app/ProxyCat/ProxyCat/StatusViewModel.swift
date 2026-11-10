@@ -6,6 +6,12 @@ import CoreLocation
 
 @MainActor
 class StatusViewModel: ObservableObject {
+    @Published var connectionLog = ConnectionLog()
+    @Published var connectionLogError: String?
+    @Published var connectionLookupNotice: String?
+    @Published private(set) var isLoadingConnections = false
+    private var connectionObservationTask: Task<Void, Never>?
+    private var connectionObservationID: UUID?
     @Published var websiteResult: WebsiteCheckResult?
     @Published var websiteCheckError: String?
     @Published var isCheckingWebsite = false
@@ -24,6 +30,10 @@ class StatusViewModel: ObservableObject {
     @Published var tunEnabled = false
     @Published var tunDevice = ""
     @Published var isChangingTUN = false
+    @Published private(set) var tunChangeTarget: Bool?
+    @Published private(set) var tunProgress: TUNProgress?
+    @Published private(set) var tunChangeStartedAt: Date?
+    private var tunOperationID: UUID?
     @Published var currentGroup = ""
     @Published var currentNode = ""
     @Published var proxyGroups: [ProxyGroup] = []
@@ -32,6 +42,9 @@ class StatusViewModel: ObservableObject {
     @Published var isRefreshing = false
     @Published var testResult: TestResult?
     @Published var diagnoseReport: DiagnoseReport?
+    @Published private(set) var diagnosisNeedsRefresh = false
+    @Published private(set) var isDiagnosing = false
+    private var networkFeedbackRevision: UInt64 = 0
     @Published var proxyDelays: [String: ProxyDelayResult] = [:]
     @Published var isTestingDelays = false
     @Published var toggleTestResult: ProxyDelayResult?
@@ -44,6 +57,7 @@ class StatusViewModel: ObservableObject {
     @Published var updateProgress: Int?
     @Published var availableUpdateVersion: String?
     @Published var isCheckingForUpdate = false
+    @Published private(set) var isCheckingForUpdateAutomatically = false
     @Published var isInstallingUpdate = false
     @Published var showRestartAlert = false
     @Published var updateReleaseVersion: String?
@@ -52,7 +66,15 @@ class StatusViewModel: ObservableObject {
     @Published var updatePublishedAt: String?
     @Published var showingCurrentReleaseNotes = true
     @Published var profiles: [Profile] = []
-    @Published var activeProfileID: String?
+    @Published private(set) var isRefreshingTraffic = false
+    @Published private(set) var trafficRefreshError: String?
+    private var trafficAttempts: [String: Date] = [:]
+    @Published var activeProfileID: String? {
+        didSet {
+            // First loading saved profile metadata does not change the route.
+            if let oldValue, oldValue != activeProfileID { invalidateNetworkFeedback() }
+        }
+    }
     @Published var updateFailed = false
     @Published var currentWiFiSSID: String?
     @Published var campusProtectionNotice: String?
@@ -79,9 +101,11 @@ class StatusViewModel: ObservableObject {
     private let defaults: UserDefaults
     private let appVersion: String
     private let releaseNotesOverride: String?
+    private let dateProvider: () -> Date
     private let wifiSSIDProvider: () -> String?
     private let campusPrompt: (String) -> Bool
     private var refreshTimer: Timer?
+    private var automaticUpdateCheckTask: Task<Void, Never>?
     private var campusActionInProgress = false
     private var lastCampusPromptSSID: String?
     private lazy var locationDelegate = WiFiLocationDelegate { [weak self] in
@@ -97,11 +121,12 @@ class StatusViewModel: ObservableObject {
          wifiSSIDProvider: @escaping () -> String? = {
              CWWiFiClient.shared().interfaces()?.compactMap { $0.ssid() }.first
          }, campusPrompt: ((String) -> Bool)? = nil, currentVersion: String? = nil,
-         currentReleaseNotes: String? = nil) {
+         currentReleaseNotes: String? = nil, dateProvider: @escaping () -> Date = { Date() }) {
         self.helper = helper
         self.defaults = defaults
         self.appVersion = currentVersion ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知版本"
         self.releaseNotesOverride = currentReleaseNotes
+        self.dateProvider = dateProvider
         self.wifiSSIDProvider = wifiSSIDProvider
         self.campusPrompt = campusPrompt ?? { ssid in
             let alert = NSAlert()
@@ -116,6 +141,16 @@ class StatusViewModel: ObservableObject {
         protectedWiFiSSIDs = defaults.stringArray(forKey: "protectedWiFiSSIDs") ?? []
         campusProtectionEnabled = defaults.object(forKey: "campusProtectionEnabled") as? Bool ?? true
         campusNetworkAction = CampusNetworkAction(rawValue: defaults.string(forKey: "campusNetworkAction") ?? "prompt") ?? .prompt
+        if let data = defaults.data(forKey: "availableUpdate.\(appVersion)"),
+           let event = try? JSONDecoder().decode(UpdateEvent.self, from: data),
+           event.stage == "done", event.newVersion != nil {
+            availableUpdateVersion = event.newVersion
+            updateStatus = event.message
+            updateReleaseVersion = event.releaseVersion ?? event.newVersion
+            updateReleaseNotes = event.releaseNotes ?? ""
+            updateReleaseURL = event.releaseURL
+            updatePublishedAt = event.publishedAt
+        }
     }
 
     func startAutoRefresh(interval: TimeInterval = 5.0) {
@@ -129,14 +164,69 @@ class StatusViewModel: ObservableObject {
     func stopAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = nil
+        automaticUpdateCheckTask?.cancel()
+        stopObservingConnections()
     }
+
+    func startObservingConnections() {
+        guard connectionObservationTask == nil else { return }
+        let observationID = UUID()
+        connectionObservationID = observationID
+        connectionObservationTask = Task { [weak self] in
+            let preparation = await self?.helper.prepareConnectionObservation()
+            guard let self, !Task.isCancelled, self.connectionObservationID == observationID else { return }
+            if case .failure = preparation {
+                self.connectionLookupNotice = "应用识别暂不可用，仍显示已捕获的连接。重新打开此窗口可重试。"
+            } else {
+                self.connectionLookupNotice = nil
+            }
+            while !Task.isCancelled {
+                await self.refreshConnections()
+                do { try await Task.sleep(nanoseconds: 2_000_000_000) }
+                catch { return }
+            }
+        }
+    }
+
+    func stopObservingConnections() {
+        connectionObservationID = nil
+        connectionObservationTask?.cancel()
+        connectionObservationTask = nil
+    }
+
+    func refreshConnections() async {
+        guard !isLoadingConnections else { return }
+        let observationID = connectionObservationID
+        isLoadingConnections = true
+        defer { isLoadingConnections = false }
+        let result = await helper.getConnections()
+        guard !Task.isCancelled, connectionObservationID == observationID else { return }
+        switch result {
+        case .success(let snapshot):
+            connectionLog.observe(snapshot, at: dateProvider())
+            connectionLogError = nil
+        case .failure:
+            connectionLogError = "暂时无法读取连接，请确认代理引擎正在运行。已有记录保留为上次采样结果。"
+        }
+    }
+
+    func clearEndedConnections() { connectionLog.clearEnded() }
 
     func refreshStatus() async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+        var previousContext = networkFeedbackContext
+        func invalidateChangedFeedback() {
+            let context = networkFeedbackContext
+            if previousContext != context {
+                invalidateNetworkFeedback()
+                previousContext = context
+            }
+        }
 
         currentWiFiSSID = wifiSSIDProvider()
+        invalidateChangedFeedback()
 
         // Core status
         let coreResult = await helper.getCoreStatus()
@@ -146,7 +236,9 @@ class StatusViewModel: ObservableObject {
             corePID = status.pid
         case .failure(let error):
             lastError = "Core: \(error.localizedDescription)"
+            invalidateNetworkFeedback()
         }
+        invalidateChangedFeedback()
 
         // System proxy status
         let proxyResult = await helper.getSystemProxyStatus()
@@ -155,9 +247,12 @@ class StatusViewModel: ObservableObject {
             systemProxyEnabled = status.socksEnabled || status.httpEnabled || status.httpsEnabled
         case .failure:
             systemProxyEnabled = false
+            invalidateNetworkFeedback()
         }
+        invalidateChangedFeedback()
 
         await enforceCampusNetworkPolicy()
+        invalidateChangedFeedback()
 
         let modeResult = await helper.getModeStatus()
         switch modeResult {
@@ -166,8 +261,10 @@ class StatusViewModel: ObservableObject {
             tunEnabled = coreRunning && status.tunEnabled == true
             tunDevice = status.tunDevice ?? ""
         case .failure:
+            invalidateNetworkFeedback()
             if !coreRunning { currentMode = "rule"; tunEnabled = false; tunDevice = "" }
         }
+        invalidateChangedFeedback()
 
         // Proxy groups for current selection
         let groupsResult = await helper.getProxyGroups()
@@ -177,7 +274,9 @@ class StatusViewModel: ObservableObject {
             proxyGroupsError = nil
         case .success:
             proxyGroupsError = "节点组暂未就绪，已保留上次的节点列表。"
+            invalidateNetworkFeedback()
         case .failure(let error):
+            invalidateNetworkFeedback()
             // A controller request can fail while switching networks or loading
             // a config. Keep the last selection until the core actually stops.
             if coreRunning {
@@ -187,10 +286,13 @@ class StatusViewModel: ObservableObject {
                 proxyGroupsError = nil
             }
         }
+        invalidateChangedFeedback()
 
         await loadProfiles()
+        invalidateChangedFeedback()
         if websitePreviousMode != nil && currentMode != "global" { websitePreviousMode = nil }
         recordNodeChanges()
+        scheduleAutomaticUpdateCheck()
     }
 
     func addCurrentWiFiToCampusNetworks() {
@@ -241,6 +343,7 @@ class StatusViewModel: ObservableObject {
         }
 
         campusActionInProgress = true
+        invalidateNetworkFeedback()
         defer { campusActionInProgress = false }
         if campusNetworkAction == .prompt {
             guard lastCampusPromptSSID != ssid else { return }
@@ -283,6 +386,7 @@ class StatusViewModel: ObservableObject {
 
     func enableSystemProxy() async {
         guard !isToggleTesting, !isChangingMode, !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
+        invalidateNetworkFeedback()
         isToggleTesting = true
         toggleTestResult = nil
         lastError = nil
@@ -335,7 +439,10 @@ class StatusViewModel: ObservableObject {
 
         // Test the group returned by the readiness check, even if a periodic
         // refresh updates the displayed selection while enabling the proxy.
+        let testRevision = networkFeedbackRevision
+        let testContext = networkFeedbackContext
         let delayResult = await helper.proxyDelay(name: target)
+        guard testRevision == networkFeedbackRevision, testContext == networkFeedbackContext else { return }
         switch delayResult {
         case .success(let r):
             toggleTestResult = r
@@ -412,6 +519,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func disableSystemProxy() async {
+        invalidateNetworkFeedback()
         let result = await helper.disableSystemProxy()
         if case .failure(let error) = result {
             lastError = "Disable proxy failed: \(error.localizedDescription)"
@@ -421,6 +529,7 @@ class StatusViewModel: ObservableObject {
 
     func startCore() async {
         guard canStartProxyOnCurrentNetwork() else { return }
+        invalidateNetworkFeedback()
         let result = await helper.startCore()
         if case .failure(let error) = result {
             lastError = "Start core failed: \(error.localizedDescription)"
@@ -429,6 +538,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func stopCore() async {
+        invalidateNetworkFeedback()
         let result = await helper.stopCore()
         if case .failure(let error) = result {
             lastError = "Stop core failed: \(error.localizedDescription)"
@@ -438,6 +548,7 @@ class StatusViewModel: ObservableObject {
 
     func restartCore() async {
         guard !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
+        invalidateNetworkFeedback()
         let result = await helper.restartCore()
         if case .failure(let error) = result {
             lastError = "Restart core failed: \(error.localizedDescription)"
@@ -447,6 +558,7 @@ class StatusViewModel: ObservableObject {
 
     func setMode(_ mode: String) async {
         guard !isChangingMode, !isToggleTesting, !isChangingTUN else { return }
+        invalidateNetworkFeedback()
         isChangingMode = true
         defer { isChangingMode = false }
         let result = await helper.setMode(mode)
@@ -464,14 +576,33 @@ class StatusViewModel: ObservableObject {
         await refreshStatus()
     }
 
-    func setTUNEnabled(_ enabled: Bool) async {
-        guard !isChangingTUN, !isChangingMode, !isToggleTesting, !isBootstrapping else { return }
-        if enabled && !canStartProxyOnCurrentNetwork() { return }
+    func uninstallTUNHelper() async {
+        guard !tunEnabled, !isChangingTUN, !isBootstrapping else { return }
         isChangingTUN = true
         lastError = nil
         defer { isChangingTUN = false }
-        switch await helper.setTUNEnabled(enabled) {
+        if case .failure(let error) = await helper.uninstallTUNHelper() {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func setTUNEnabled(_ enabled: Bool) async {
+        guard !isChangingTUN, !isChangingMode, !isToggleTesting, !isBootstrapping else { return }
+        if enabled && !canStartProxyOnCurrentNetwork() { return }
+        invalidateNetworkFeedback()
+        isChangingTUN = true
+        tunChangeTarget = enabled
+        let operationID = UUID()
+        tunOperationID = operationID
+        tunChangeStartedAt = Date()
+        tunProgress = TUNProgress(stage: "prepare", message: enabled ? "准备开启 TUN" : "准备关闭 TUN")
+        lastError = nil
+        switch await helper.setTUNEnabled(enabled, onProgress: { [weak self] progress in
+            guard let self, self.tunOperationID == operationID, self.isChangingTUN else { return }
+            self.tunProgress = progress
+        }) {
         case .success:
+            tunProgress = TUNProgress(stage: "verify", message: "确认最终连接状态")
             // Confirm the kernel's result before showing an active tunnel.
             if case .success(let status) = await helper.getModeStatus() {
                 tunEnabled = status.tunEnabled == true
@@ -484,13 +615,22 @@ class StatusViewModel: ObservableObject {
         case .failure(let error):
             lastError = error.localizedDescription
         }
+        // The lifecycle command and confirmation are complete. A slow node or
+        // profile refresh must not keep the TUN switch locked afterwards.
+        isChangingTUN = false
+        tunChangeTarget = nil
+        tunProgress = nil
+        tunChangeStartedAt = nil
+        tunOperationID = nil
         await refreshStatus()
         await enforceCampusNetworkPolicy()
     }
 
     func selectProxy(group: String, proxy: String) async {
+        invalidateNetworkFeedback()
         selectionInProgress = true
         nodeBaseline = nil
+        nodeChangeNotice = nil
         defer { selectionInProgress = false }
         lastError = nil
         let result = await helper.selectProxy(group: group, proxy: proxy)
@@ -525,7 +665,7 @@ class StatusViewModel: ObservableObject {
         for group in proxyGroups where ["URLTest", "Fallback"].contains(group.type) {
             guard let previous = baseline.groups.first(where: { $0.name == group.name && $0.type == group.type }),
                   !previous.now.isEmpty, !group.now.isEmpty, previous.now != group.now else { continue }
-            nodeChangeNotice = NodeChangeNotice(message: "「\(group.name)」已从 \(previous.now) 切换到 \(group.now)", observedAt: Date())
+            nodeChangeNotice = NodeChangeNotice(message: "「\(ProxyDisplay.name(group.name))」已从 \(ProxyDisplay.name(previous.now)) 切换到 \(ProxyDisplay.name(group.now))", observedAt: Date())
             break
         }
     }
@@ -589,7 +729,11 @@ class StatusViewModel: ObservableObject {
     }
 
     func testConnection() async {
+        guard !isChangingTUN, !isChangingMode, !isBootstrapping else { return }
+        let revision = networkFeedbackRevision
+        let context = networkFeedbackContext
         let result = await helper.testConnection()
+        guard revision == networkFeedbackRevision, context == networkFeedbackContext else { return }
         switch result {
         case .success(let test):
             testResult = test
@@ -601,10 +745,14 @@ class StatusViewModel: ObservableObject {
     }
 
     func testProxyDelays() async {
+        guard !isTestingDelays, !isChangingTUN, !isChangingMode, !isBootstrapping else { return }
         isTestingDelays = true
         defer { isTestingDelays = false }
+        let revision = networkFeedbackRevision
+        let context = networkFeedbackContext
 
         let result = await helper.testProxyDelays()
+        guard revision == networkFeedbackRevision, context == networkFeedbackContext else { return }
         switch result {
         case .success(let delays):
             proxyDelays = delays
@@ -615,28 +763,91 @@ class StatusViewModel: ObservableObject {
     }
 
     func updateSubscription() async {
+        invalidateNetworkFeedback()
         let result = await helper.updateSubscription()
         if case .failure(let error) = result {
             lastError = "Update failed: \(error.localizedDescription)"
         }
     }
 
-    func checkForUpdate() async {
-        guard !isCheckingForUpdate, !isInstallingUpdate, !showRestartAlert else { return }
-        showingCurrentReleaseNotes = false
+    private var canAutomaticallyCheckForUpdate: Bool {
+        guard coreRunning, systemProxyEnabled || tunEnabled,
+              !isBootstrapping, !isChangingTUN, !isChangingMode, !isToggleTesting,
+              availableUpdateVersion == nil else { return false }
+        if let history = defaults.dictionary(forKey: "updateCheckHistory.\(appVersion)"),
+           let checkedAt = history["checkedAt"] as? Date,
+           let succeeded = history["succeeded"] as? Bool {
+            let elapsed = dateProvider().timeIntervalSince(checkedAt)
+            let interval: TimeInterval = succeeded ? 24 * 60 * 60 : 30 * 60
+            if elapsed >= 0 && elapsed < interval { return false }
+        }
+        return true
+    }
+
+    private func scheduleAutomaticUpdateCheck() {
+        guard automaticUpdateCheckTask == nil, canAutomaticallyCheckForUpdate,
+              !isCheckingForUpdate, !isInstallingUpdate, !showRestartAlert else { return }
+        // Do not hold up status refreshes or opening the menu while GitHub responds.
+        automaticUpdateCheckTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.automaticUpdateCheckTask = nil }
+            await self.checkForUpdate(automatically: true)
+        }
+    }
+
+    func checkForUpdate(automatically: Bool = false) async {
+        guard !isInstallingUpdate, !showRestartAlert else { return }
+        if isCheckingForUpdate {
+            // A user who opens "Check for updates" can review the result of
+            // the existing request, including errors, without another request.
+            if !automatically {
+                isCheckingForUpdateAutomatically = false
+                showingCurrentReleaseNotes = false
+            }
+            return
+        }
+        guard !Task.isCancelled, !automatically || canAutomaticallyCheckForUpdate else { return }
         isCheckingForUpdate = true
-        updateFailed = false
-        updateStatus = "正在检查更新..."
-        updateErrorDetails = nil
-        updateProgress = nil
-        availableUpdateVersion = nil
-        updateReleaseVersion = nil
-        updateReleaseNotes = ""
-        updateReleaseURL = nil
-        updatePublishedAt = nil
-        defer { isCheckingForUpdate = false }
+        isCheckingForUpdateAutomatically = automatically
+        if !automatically {
+            showingCurrentReleaseNotes = false
+            updateFailed = false
+            updateStatus = "正在检查更新..."
+            updateErrorDetails = nil
+            updateProgress = nil
+            availableUpdateVersion = nil
+            updateReleaseVersion = nil
+            updateReleaseNotes = ""
+            updateReleaseURL = nil
+            updatePublishedAt = nil
+        }
+        defer {
+            isCheckingForUpdate = false
+            isCheckingForUpdateAutomatically = false
+        }
 
         let result = await helper.checkForUpdate()
+        guard !Task.isCancelled else { return }
+        let succeeded: Bool
+        if case .success(let event) = result { succeeded = event.stage == "done" }
+        else { succeeded = false }
+        defaults.set(["checkedAt": dateProvider(), "succeeded": succeeded],
+                     forKey: "updateCheckHistory.\(appVersion)")
+        if succeeded, case .success(let event) = result {
+            if event.newVersion != nil, let data = try? JSONEncoder().encode(event) {
+                defaults.set(data, forKey: "availableUpdate.\(appVersion)")
+            } else {
+                defaults.removeObject(forKey: "availableUpdate.\(appVersion)")
+            }
+        }
+        let background = isCheckingForUpdateAutomatically
+        if background {
+            // Background failures and "already current" results stay silent.
+            // Preserve unrelated errors and any changelog the user is reading.
+            guard case .success(let event) = result, succeeded, event.newVersion != nil else { return }
+            updateFailed = false
+            updateErrorDetails = nil
+        }
         switch result {
         case .success(let event):
             updateStatus = event.message
@@ -648,7 +859,7 @@ class StatusViewModel: ObservableObject {
             updatePublishedAt = event.publishedAt
             updateFailed = event.stage == "error"
             updateErrorDetails = event.stage == "error" ? event.details : nil
-            lastError = event.stage == "error" ? event.message : nil
+            if !background { lastError = event.stage == "error" ? event.message : nil }
         case .failure(let error):
             updateStatus = "检查更新失败：\(error.localizedDescription)"
             updateFailed = true
@@ -683,12 +894,16 @@ class StatusViewModel: ObservableObject {
             if event.stage == "done" {
                 finished = true
                 showRestartAlert = event.progress == 100
+                defaults.removeObject(forKey: "availableUpdate.\(appVersion)")
             }
             if event.stage == "error" {
                 finished = true
                 updateFailed = true
                 updateErrorDetails = event.details
-                if event.recheck == true { availableUpdateVersion = nil }
+                if event.recheck == true {
+                    availableUpdateVersion = nil
+                    defaults.removeObject(forKey: "availableUpdate.\(appVersion)")
+                }
             }
         }
         if !finished {
@@ -712,13 +927,40 @@ class StatusViewModel: ObservableObject {
         await helper.cancelUpdate()
     }
 
+    private var networkFeedbackContext: String {
+        let selections = proxyGroups.sorted { $0.name < $1.name }.map { "\($0.name)=\($0.now)" }
+        return ([currentWiFiSSID ?? "", String(coreRunning), String(corePID), String(systemProxyEnabled),
+                 String(tunEnabled), currentMode] + selections).joined(separator: "\n")
+    }
+
+    private func invalidateNetworkFeedback() {
+        networkFeedbackRevision &+= 1
+        if diagnoseReport != nil || isDiagnosing { diagnosisNeedsRefresh = true }
+        diagnoseReport = nil
+        testResult = nil
+        toggleTestResult = nil
+    }
+
     func runDiagnose() async {
+        guard !isDiagnosing, !isChangingTUN, !isChangingMode, !isBootstrapping else { return }
+        isDiagnosing = true
+        defer { isDiagnosing = false }
+        let revision = networkFeedbackRevision
+        let context = networkFeedbackContext
         let result = await helper.runDiagnose()
+        // A result from before a switch must not erase its failure or certify
+        // the new route. Refreshes also invalidate results on observed changes.
+        guard revision == networkFeedbackRevision, context == networkFeedbackContext else {
+            diagnosisNeedsRefresh = true
+            return
+        }
         switch result {
         case .success(let report):
             diagnoseReport = report
+            diagnosisNeedsRefresh = false
             lastError = nil
         case .failure(let error):
+            diagnoseReport = nil
             lastError = "Diagnose failed: \(error.localizedDescription)"
         }
     }
@@ -727,8 +969,10 @@ class StatusViewModel: ObservableObject {
         let result = await helper.getProfiles()
         switch result {
         case .success(let p):
+            let nextID = p.first(where: { $0.active })?.id
+            if activeProfileID != nextID { trafficRefreshError = nil }
             profiles = p
-            activeProfileID = p.first(where: { $0.active })?.id
+            activeProfileID = nextID
         case .failure:
             // Listing saved profiles does not depend on network availability.
             // A transient helper error must not erase the visible saved list.
@@ -736,8 +980,41 @@ class StatusViewModel: ObservableObject {
         }
     }
 
+    var activeProfile: Profile? { profiles.first { $0.id == activeProfileID } }
+
+    func refreshSubscriptionTraffic(force: Bool = false) async {
+        guard !isRefreshingTraffic, let profile = activeProfile else { return }
+        let now = dateProvider()
+        if !force {
+            if let attempt = trafficAttempts[profile.id], now.timeIntervalSince(attempt) < 5 * 60 { return }
+            if let checkedAt = TrafficPresentation(profile: profile).checkedAt,
+               now.timeIntervalSince(checkedAt) >= 0, now.timeIntervalSince(checkedAt) < 30 * 60 { return }
+        }
+        isRefreshingTraffic = true
+        trafficAttempts[profile.id] = now
+        defer {
+            isRefreshingTraffic = false
+            if activeProfileID != profile.id {
+                Task { await refreshSubscriptionTraffic() }
+            }
+        }
+        let result = await helper.refreshSubscriptionTraffic(profileID: profile.id)
+        guard activeProfileID == profile.id else { return }
+        switch result {
+        case .success(let snapshot):
+            guard snapshot.profileID == profile.id,
+                  let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+            profiles[index].traffic = snapshot.traffic
+            profiles[index].trafficCheckedAt = snapshot.checkedAt
+            trafficRefreshError = nil
+        case .failure:
+            trafficRefreshError = "流量刷新失败，可稍后重试；已保留上次数据。"
+        }
+    }
+
     func activateProfile(id: String) async {
         guard !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
+        invalidateNetworkFeedback()
         let result = await helper.activateProfile(id: id)
         if case .failure(let error) = result {
             lastError = "Activate profile failed: \(error.localizedDescription)"
@@ -767,6 +1044,7 @@ class StatusViewModel: ObservableObject {
             bootstrapStatus = "校园网保护已阻止启动代理。"
             return
         }
+        invalidateNetworkFeedback()
         isBootstrapping = true
         defer { isBootstrapping = false }
         bootstrapStatus = "正在启动..."

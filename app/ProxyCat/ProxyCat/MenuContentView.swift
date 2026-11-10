@@ -3,7 +3,9 @@ import SwiftUI
 struct MenuContentView: View {
     @ObservedObject var viewModel: StatusViewModel
     let onShowUpdates: (Bool) -> Void
+    var onShowAvailableUpdate: () -> Void = {}
     var onShowWebsiteCheck: () -> Void = {}
+    var onShowConnections: () -> Void = {}
     var maximumHeight: CGFloat = 640
     var onHeightChange: (CGFloat) -> Void = { _ in }
     @State private var subscriptionURL: String = ""
@@ -57,7 +59,12 @@ struct MenuContentView: View {
                         .font(.system(size: 11))
                         .padding(.horizontal, 16).padding(.vertical, 8)
                     }
-                    MenuButton("这个网站打不开？", icon: "globe") { onShowWebsiteCheck() }
+                    MenuButton("有网站打不开？点这里", icon: "globe") { onShowWebsiteCheck() }
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.secondary)
+                    MenuButton("连接记录", icon: "list.bullet.rectangle") { onShowConnections() }
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.secondary)
 
                     Divider()
                     nodesSection
@@ -89,24 +96,38 @@ struct MenuContentView: View {
             contentHeight = measured
             onHeightChange(min(measured + 41, maximumHeight))
         }
-        .onAppear(perform: captureDefaultExpandedGroup)
+        .onAppear {
+            captureDefaultExpandedGroup()
+            Task { await viewModel.refreshSubscriptionTraffic() }
+        }
         .onChange(of: viewModel.currentGroup) { _ in captureDefaultExpandedGroup() }
-        .onChange(of: viewModel.activeProfileID) { _ in captureDefaultExpandedGroup() }
+        .onChange(of: viewModel.activeProfileID) { _ in
+            captureDefaultExpandedGroup()
+            Task { await viewModel.refreshSubscriptionTraffic() }
+        }
         .onChange(of: viewModel.proxyGroups.map(\.name)) { _ in captureDefaultExpandedGroup() }
     }
 
     private var headerSection: some View {
         let state = MenuBarProxyState(running: viewModel.coreRunning, enabled: viewModel.systemProxyEnabled, mode: viewModel.currentMode, tunEnabled: viewModel.tunEnabled)
-        return HStack {
+        return HStack(spacing: 8) {
             Image(systemName: state.symbol)
                 .foregroundColor(state.color.map { Color(nsColor: $0) } ?? .secondary)
-            Text(state.title)
+            Text(viewModel.isChangingTUN ? "ProxyCat：TUN 切换中" : state.title)
                 .font(.headline)
-            Spacer()
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .help(viewModel.isChangingTUN ? viewModel.tunProgress?.message ?? "正在切换 TUN" : state.description)
+            Spacer(minLength: 0)
+            TrafficCapsuleView(
+                presentation: TrafficPresentation(profile: viewModel.activeProfile, refreshError: viewModel.trafficRefreshError),
+                isRefreshing: viewModel.isRefreshingTraffic
+            ) {
+                Task { await viewModel.refreshSubscriptionTraffic(force: true) }
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .help(state.description)
     }
 
     private var profileSection: some View {
@@ -292,10 +313,13 @@ struct MenuContentView: View {
             }
             .font(.system(size: 12))
             .padding(.horizontal, 16)
-            .help("接管应用流量，仍按所选模式分流；开启需管理员授权。")
+            .help("接管应用流量，仍按所选模式分流；首次安装系统助手需管理员授权。")
 
             if viewModel.isChangingTUN {
-                activityLabel("正在切换 TUN，请完成系统授权…")
+                TUNTransitionView(progress: viewModel.tunProgress,
+                                  startedAt: viewModel.tunChangeStartedAt,
+                                  enabling: viewModel.tunChangeTarget != false)
+                    .padding(.horizontal, 16)
             }
             if viewModel.isChangingMode {
                 activityLabel("正在切换代理模式…")
@@ -539,7 +563,7 @@ struct MenuContentView: View {
                     Text("直连：直接访问，不经过代理节点。")
                     Text("仅影响进入 ProxyCat 的流量。")
                         .foregroundColor(.secondary)
-                    Text("TUN：接管应用流量，可搭配以上任一模式；开启需管理员授权。")
+                    Text("TUN：接管应用流量，可搭配以上任一模式；首次安装系统助手需管理员授权。")
                 }
                 .font(.system(size: 11))
                 .fixedSize(horizontal: false, vertical: true)
@@ -583,7 +607,7 @@ struct MenuContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(viewModel.proxyGroups) { group in
                 VStack(alignment: .leading, spacing: 4) {
-                    MenuDisclosureRow(group.name, summary: group.now.isEmpty ? "未选择" : displayName(for: group.now), isExpanded: isGroupExpanded(group)) {
+                    MenuDisclosureRow(displayName(for: group.name), summary: group.now.isEmpty ? "未选择" : displayName(for: group.now), isExpanded: isGroupExpanded(group)) {
                         setGroupExpanded(group, expanded: !isGroupExpanded(group))
                     }
 
@@ -645,7 +669,7 @@ struct MenuContentView: View {
     }
 
     private func displayName(for proxy: String) -> String {
-        proxy.replacingOccurrences(of: "\u{1F1F9}\u{1F1FC}", with: "\u{1F1E8}\u{1F1F3}")
+        ProxyDisplay.name(proxy)
     }
 
     private func delayLabel(for proxy: String) -> String {
@@ -669,7 +693,7 @@ struct MenuContentView: View {
     }
 
     private var hasFeedback: Bool {
-        viewModel.lastError != nil || viewModel.testResult != nil || viewModel.diagnoseReport != nil
+        viewModel.lastError != nil || viewModel.testResult != nil || viewModel.diagnoseReport != nil || viewModel.diagnosisNeedsRefresh
     }
 
     private var feedbackSection: some View {
@@ -679,6 +703,21 @@ struct MenuContentView: View {
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
+
+            if let lastError = viewModel.lastError {
+                Text(lastError)
+                    .font(.system(size: 12))
+                    .foregroundColor(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+            }
+
+            if viewModel.diagnosisNeedsRefresh {
+                Text("状态已变化，请重新诊断")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 16)
+            }
 
             if let testResult = viewModel.testResult {
                 StatusRow(
@@ -696,22 +735,15 @@ struct MenuContentView: View {
 
             if let report = viewModel.diagnoseReport {
                 if report.checks.contains(where: { $0.status.lowercased() != "pass" }) {
-                    MenuDisclosureRow("诊断", summary: diagnoseSummary(report), isExpanded: showingDiagnosticDetails) {
+                    MenuDisclosureRow("上次诊断", summary: diagnoseSummary(report), isExpanded: showingDiagnosticDetails) {
                         showingDiagnosticDetails.toggle()
                     }
                     if showingDiagnosticDetails { diagnoseDetails(report) }
                 } else {
-                    StatusRow(label: "诊断", value: diagnoseSummary(report))
+                    StatusRow(label: "上次诊断", value: diagnoseSummary(report))
                 }
             }
 
-            if let lastError = viewModel.lastError {
-                Text(lastError)
-                    .font(.system(size: 12))
-                    .foregroundColor(.red)
-                    .lineLimit(3)
-                    .padding(.horizontal, 16)
-            }
         }
         .padding(.bottom, 8)
     }
@@ -728,6 +760,7 @@ struct MenuContentView: View {
     }
 
     private func diagnoseSummary(_ report: DiagnoseReport) -> String {
+        guard !report.checks.isEmpty else { return "未获得检查结果" }
         let failCount = report.checks.filter { $0.status.lowercased() == "fail" }.count
         let warnCount = report.checks.filter { $0.status.lowercased() == "warn" }.count
 
@@ -736,6 +769,9 @@ struct MenuContentView: View {
         }
         if warnCount > 0 {
             return "\(warnCount) 警告"
+        }
+        if report.checks.contains(where: { $0.status.lowercased() != "pass" }) {
+            return "检查未完成"
         }
         return "全部通过"
     }
@@ -807,7 +843,7 @@ struct MenuContentView: View {
             }) {
                 HStack {
                     Image(systemName: "stethoscope").frame(width: 16)
-                    Text("运行诊断").font(.system(size: 12, weight: .medium))
+                    Text(viewModel.isDiagnosing ? "正在诊断…" : "运行诊断").font(.system(size: 12, weight: .medium))
                     Spacer()
                 }
                 .padding(.horizontal, 10)
@@ -816,6 +852,7 @@ struct MenuContentView: View {
                 .cornerRadius(6)
             }
             .buttonStyle(PlainButtonStyle())
+            .disabled(viewModel.isDiagnosing || viewModel.isChangingTUN || viewModel.isChangingMode || viewModel.isBootstrapping)
         }
         .padding(.horizontal, 16)
     }
@@ -853,6 +890,18 @@ struct MenuContentView: View {
             MenuButton("重启代理引擎", icon: "arrow.counterclockwise") {
                 Task { await viewModel.restartCore() }
             }
+
+            MenuButton("卸载 TUN 系统助手…", icon: "shield.slash") {
+                let alert = NSAlert()
+                alert.messageText = "卸载 TUN 系统助手？"
+                alert.informativeText = "下次开启 TUN 时需要重新授权安装。普通代理不受影响。"
+                alert.addButton(withTitle: "卸载")
+                alert.addButton(withTitle: "取消")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    Task { await viewModel.uninstallTUNHelper() }
+                }
+            }
+            .disabled(viewModel.tunEnabled || viewModel.isChangingTUN || viewModel.isBootstrapping)
         }
         .padding(.bottom, 8)
     }
@@ -873,21 +922,28 @@ struct MenuContentView: View {
 
     private var updateActivitySection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !viewModel.updateStatus.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.updateStatus)
-                        .font(.system(size: 12))
-                        .foregroundColor(viewModel.updateFailed ? .red : .secondary)
-                    if let progress = viewModel.updateProgress {
-                        ProgressView(value: Double(progress), total: 100)
-                    }
+            if let version = viewModel.availableUpdateVersion,
+               !viewModel.isInstallingUpdate, !viewModel.showRestartAlert, !viewModel.updateFailed {
+                MenuButton("发现新版本 v\(version) · 查看更新", icon: "arrow.down.circle") {
+                    onShowAvailableUpdate()
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 6)
-            }
-            if viewModel.availableUpdateVersion != nil || viewModel.isInstallingUpdate || viewModel.showRestartAlert || viewModel.updateFailed {
-                MenuButton(viewModel.showRestartAlert ? "更新完成 · 查看详情" : "查看更新详情", icon: "doc.text") {
-                    onShowUpdates(true)
+            } else {
+                if !viewModel.updateStatus.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(viewModel.updateStatus)
+                            .font(.system(size: 12))
+                            .foregroundColor(viewModel.updateFailed ? .red : .secondary)
+                        if let progress = viewModel.updateProgress {
+                            ProgressView(value: Double(progress), total: 100)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 6)
+                }
+                if viewModel.availableUpdateVersion != nil || viewModel.isInstallingUpdate || viewModel.showRestartAlert || viewModel.updateFailed {
+                    MenuButton(viewModel.showRestartAlert ? "更新完成 · 查看详情" : "查看更新详情", icon: "doc.text") {
+                        onShowUpdates(true)
+                    }
                 }
             }
         }
@@ -895,9 +951,10 @@ struct MenuContentView: View {
 
     private var diagnosticsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            MenuButton("运行诊断", icon: "stethoscope") {
+            MenuButton(viewModel.isDiagnosing ? "正在诊断…" : "运行诊断", icon: "stethoscope") {
                 Task { await viewModel.runDiagnose() }
             }
+            .disabled(viewModel.isDiagnosing || viewModel.isChangingTUN || viewModel.isChangingMode || viewModel.isBootstrapping)
 
             Link(destination: URL(string: "https://github.com/Cass-ette/ProxyCat/issues/new/choose")!) {
                 HStack {
