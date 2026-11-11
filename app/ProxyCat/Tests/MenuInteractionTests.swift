@@ -11,6 +11,8 @@ import AppKit
         app.setActivationPolicy(.accessory)
         app.finishLaunching()
         app.activate(ignoringOtherApps: true)
+        // Reproduce a menu-bar agent without SwiftUI-generated Edit commands.
+        app.mainMenu = nil
         let suite = "proxycat-menu-interaction-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -47,6 +49,42 @@ import AppKit
         precondition(menu.makeFirstResponder(input), "The subscription input must accept keyboard focus")
         input.currentEditor()?.insertText("https://example.com/subscription")
         precondition(input.stringValue == "https://example.com/subscription", "Typing in the subscription field must work without activating a proxy")
+        do {
+            func require(_ condition: Bool, _ message: String) throws {
+                if !condition { throw NSError(domain: "MenuInteractionTests", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+            }
+            let pasteboard = NSPasteboard.general
+            let savedClipboard = (pasteboard.pasteboardItems ?? []).map { item in
+                item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+            }
+            defer {
+                pasteboard.clearContents()
+                let items = savedClipboard.map { values -> NSPasteboardItem in
+                    let item = NSPasteboardItem()
+                    for (type, data) in values { item.setData(data, forType: type) }
+                    return item
+                }
+                pasteboard.writeObjects(items)
+            }
+            func shortcut(_ key: String, code: UInt16) {
+                let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: menu.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code)!
+                app.sendEvent(event)
+                pump()
+            }
+            pasteboard.clearContents()
+            pasteboard.setString("https://example.com/pasted-subscription", forType: .string)
+            shortcut("a", code: 0)
+            shortcut("v", code: 9)
+            try require(input.stringValue == "https://example.com/pasted-subscription", "Command-A and Command-V must replace the subscription through normal key events")
+            shortcut("a", code: 0)
+            shortcut("c", code: 8)
+            try require(pasteboard.string(forType: .string) == input.stringValue, "Command-C must copy the subscription")
+            shortcut("x", code: 7)
+            try require(input.stringValue.isEmpty, "Command-X must cut the selected subscription")
+            shortcut("v", code: 9)
+            try require(input.stringValue == "https://example.com/pasted-subscription", "Command-V must restore the cut subscription")
+            try require(app.isActive && menu.isVisible, "Editing shortcuts must keep the application active and its native menu open")
+        }
         let collapsedHeight = menu.frame.height
         defaults.set(true, forKey: "moreExpanded")
         pump(0.6)
@@ -86,7 +124,7 @@ import AppKit
         let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: menu.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
         app.postEvent(escape, atStart: false); pump()
         precondition(!menu.isVisible, "Escape must dismiss the menu")
-        print("Passed isolated native menu subscription-input, sizing, child-window, nested-popover, outside-click, Space-change and Escape interaction checks; no network helper was launched.")
+        print("Passed isolated native menu subscription-input, Command editing shortcuts, sizing, child-window, nested-popover, outside-click, Space-change and Escape interaction checks; no network helper was launched.")
         fflush(stdout)
     }
 }

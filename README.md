@@ -69,7 +69,7 @@ The [network recovery notes](docs/network-recovery.md) describe the independent 
 
 Run connection recovery regressions with `bash scripts/test-connection-recovery.sh`. These also use isolated fake helpers, including simulated controller failures and network transitions.
 
-Run menu interaction checks with `bash scripts/test-menu-interaction.sh` from a macOS GUI session. A separate test process verifies subscription typing, expanding/collapsing content, child windows, nested native popovers, outside clicks, Space-change notifications and Escape with isolated preferences and automatic network refresh disabled; it never starts the installed app or its core.
+Run menu interaction checks with `bash scripts/test-menu-interaction.sh` from a macOS GUI session. A separate test process verifies subscription typing, Command-A/V/C/X editing shortcuts, expanding/collapsing content, child windows, nested native popovers, outside clicks, Space-change notifications and Escape with isolated preferences and automatic network refresh disabled; it restores the clipboard and never starts the installed app or its core.
 
 ## Building
 

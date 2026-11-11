@@ -21,6 +21,7 @@ class MenuBarController: NSObject, NSWindowDelegate, NSPopoverDelegate {
         self.menuDefaults = menuDefaults
         super.init()
         self.viewModel = viewModel
+        installEditingMenu()
         setupStatusItem()
         statusObserver = MenuBarStatusObserver(viewModel: viewModel) { [weak self] state in
             self?.updateIcon(state)
@@ -59,6 +60,7 @@ class MenuBarController: NSObject, NSWindowDelegate, NSPopoverDelegate {
     private func showMenu() {
         let contentWidth: CGFloat = 320
         guard let button = statusItem.button else { return }
+        installEditingMenu()
         let buttonRect = button.convert(button.bounds, to: nil)
         let screenRect = button.window?.convertToScreen(buttonRect) ?? buttonRect
         let visibleFrame = button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? screenRect
@@ -90,6 +92,7 @@ class MenuBarController: NSObject, NSWindowDelegate, NSPopoverDelegate {
         let fittingHeight = hostingController.view.fittingSize.height
         popover.contentSize = NSSize(width: contentWidth, height: min(maximumHeight, max(1, fittingHeight)))
         menuPopover = popover
+        NSApplication.shared.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
         startSpaceDismissal()
@@ -120,6 +123,44 @@ class MenuBarController: NSObject, NSWindowDelegate, NSPopoverDelegate {
 
     func popoverShouldDetach(_ popover: NSPopover) -> Bool {
         false
+    }
+
+    private func installEditingMenu() {
+        // Menu-bar-only SwiftUI apps may have no Edit menu. AppKit resolves
+        // Command shortcuts through this menu and the active field editor.
+        let app = NSApplication.shared
+        let mainMenu = app.mainMenu ?? NSMenu()
+        if mainMenu.items.isEmpty {
+            let applicationItem = NSMenuItem()
+            let applicationMenu = NSMenu(title: "ProxyCat")
+            applicationMenu.addItem(withTitle: "退出 ProxyCat", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+            applicationItem.submenu = applicationMenu
+            mainMenu.addItem(applicationItem)
+        }
+        let commands: [(String, Selector, String, NSEvent.ModifierFlags)] = [
+            ("撤销", NSSelectorFromString("undo:"), "z", .command),
+            ("重做", NSSelectorFromString("redo:"), "z", [.command, .shift]),
+            ("剪切", #selector(NSText.cut(_:)), "x", .command),
+            ("复制", #selector(NSText.copy(_:)), "c", .command),
+            ("粘贴", #selector(NSText.paste(_:)), "v", .command),
+            ("全选", #selector(NSText.selectAll(_:)), "a", .command)
+        ]
+        let editMenu: NSMenu
+        if let existing = mainMenu.items.compactMap(\.submenu).first(where: { menu in
+            menu.items.contains { $0.action == #selector(NSText.paste(_:)) }
+        }) {
+            editMenu = existing
+        } else {
+            let editItem = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
+            editMenu = NSMenu(title: "编辑")
+            editItem.submenu = editMenu
+            mainMenu.addItem(editItem)
+        }
+        for (title, action, key, modifiers) in commands where !editMenu.items.contains(where: { $0.action == action }) {
+            let item = editMenu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
+        }
+        if app.mainMenu == nil { app.mainMenu = mainMenu }
     }
 
     private func showWebsiteCheck() {
