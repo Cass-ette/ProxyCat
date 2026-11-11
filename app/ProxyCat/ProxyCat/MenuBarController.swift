@@ -1,29 +1,24 @@
 import SwiftUI
 import AppKit
 
-class KeyEventWindow: NSWindow {
-    override var canBecomeKey: Bool { true }
-}
-
 @MainActor
-class MenuBarController: NSObject, NSWindowDelegate {
+class MenuBarController: NSObject, NSWindowDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private var viewModel: StatusViewModel!
-    private var menuWindow: KeyEventWindow?
+    private(set) var menuPopover: NSPopover?
     private var websiteWindow: NSWindow?
     private var connectionsWindow: NSWindow?
     private var updateWindow: NSWindow?
     private var statusObserver: MenuBarStatusObserver?
-    private var outsideClickMonitor: Any?
-    private var localClickMonitor: Any?
     private var spaceObserver: NSObjectProtocol?
-    private var inactiveObserver: NSObjectProtocol?
+    private let menuDefaults: UserDefaults
 
     override convenience init() {
         self.init(viewModel: StatusViewModel(), autoRefresh: true)
     }
 
-    init(viewModel: StatusViewModel, autoRefresh: Bool) {
+    init(viewModel: StatusViewModel, autoRefresh: Bool, menuDefaults: UserDefaults = .standard) {
+        self.menuDefaults = menuDefaults
         super.init()
         self.viewModel = viewModel
         setupStatusItem()
@@ -54,21 +49,26 @@ class MenuBarController: NSObject, NSWindowDelegate {
     }
 
     @objc private func toggleMenu() {
-        if menuWindow == nil {
-            showMenu()
-        } else {
+        if menuPopover?.isShown == true {
             hideMenu()
+        } else {
+            showMenu()
         }
     }
 
     private func showMenu() {
-        let windowWidth: CGFloat = 320
+        let contentWidth: CGFloat = 320
         guard let button = statusItem.button else { return }
         let buttonRect = button.convert(button.bounds, to: nil)
         let screenRect = button.window?.convertToScreen(buttonRect) ?? buttonRect
         let visibleFrame = button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? screenRect
-        let margin: CGFloat = 8
-        let windowHeight = min(640, max(160, screenRect.minY - visibleFrame.minY - margin * 2))
+        // Reserve room for AppKit's popover frame and arrow. AppKit owns the
+        // anchor and screen clamping; only the scrollable content is bounded.
+        let maximumHeight = min(640, max(160, screenRect.minY - visibleFrame.minY - 32))
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = false
+        popover.delegate = self
         let hostingController = NSHostingController(
             rootView: MenuContentView(viewModel: viewModel, onShowUpdates: { [weak self] check in
                 self?.showUpdates(check: check)
@@ -76,94 +76,50 @@ class MenuBarController: NSObject, NSWindowDelegate {
                 self?.showUpdates(check: false, showAvailable: true)
             }, onShowWebsiteCheck: { [weak self] in self?.showWebsiteCheck() },
             onShowConnections: { [weak self] in self?.showConnections() },
-            maximumHeight: windowHeight, onHeightChange: { [weak self] height in
+            maximumHeight: maximumHeight, onHeightChange: { [weak self, weak popover] height in
                 // Apply geometry after SwiftUI finishes its layout pass.
-                DispatchQueue.main.async { self?.resizeMenu(to: height) }
-            })
-                .frame(width: windowWidth)
+                DispatchQueue.main.async {
+                    guard let self, let popover, self.menuPopover === popover,
+                          popover.isShown else { return }
+                    self.resizeMenu(to: height)
+                }
+            }).defaultAppStorage(menuDefaults)
         )
-
-        let window = KeyEventWindow(contentViewController: hostingController)
-        window.styleMask = [.borderless]
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = false
-        window.level = .statusBar
-        window.collectionBehavior = [.moveToActiveSpace, .transient, .ignoresCycle]
-        window.delegate = self
-
-        // Position the whole window below the menu bar item, clamped to the visible screen.
-        let rawX = screenRect.midX - windowWidth / 2
-        let minX = visibleFrame.minX + margin
-        let maxX = visibleFrame.maxX - windowWidth - margin
-        let x = min(max(rawX, minX), maxX)
-
-        let rawY = screenRect.minY - windowHeight - margin
-        let minY = visibleFrame.minY + margin
-        let y = max(rawY, minY)
-
-        window.setFrame(NSRect(x: x, y: y, width: windowWidth, height: windowHeight), display: true)
-
-        menuWindow = window
-        window.makeKeyAndOrderFront(nil)
-        startMenuDismissal()
+        popover.contentViewController = hostingController
+        hostingController.view.layoutSubtreeIfNeeded()
+        let fittingHeight = hostingController.view.fittingSize.height
+        popover.contentSize = NSSize(width: contentWidth, height: min(maximumHeight, max(1, fittingHeight)))
+        menuPopover = popover
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+        startSpaceDismissal()
     }
 
     private func resizeMenu(to height: CGFloat) {
-        guard let window = menuWindow, abs(window.frame.height - height) > 0.5 else { return }
-        var frame = window.frame
-        // Keep the top edge below the menu bar when sections open or close.
-        frame.origin.y = frame.maxY - height
-        frame.size.height = height
-        window.setFrame(frame, display: true)
+        guard let popover = menuPopover, popover.isShown,
+              abs(popover.contentSize.height - height) > 0.5 else { return }
+        popover.contentSize = NSSize(width: 320, height: height)
     }
 
     private func hideMenu() {
-        stopMenuDismissal()
-        menuWindow?.orderOut(nil)
-        menuWindow = nil
+        menuPopover?.performClose(nil)
     }
 
-    private func startMenuDismissal() {
-        stopMenuDismissal()
-        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
-            Task { @MainActor in self?.hideMenu() }
-        }
-        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
-            guard let self, let menu = self.menuWindow else { return event }
-            if event.type == .keyDown {
-                if event.keyCode == 53, event.window === menu { self.hideMenu(); return nil }
-                return event
-            }
-            // Let the cat button's own action toggle the menu once. Child
-            // popovers and sheets remain interactive while the menu is open.
-            if event.window === self.statusItem.button?.window { return event }
-            var window = event.window
-            while let candidate = window {
-                if candidate === menu { return event }
-                window = candidate.parent
-            }
-            if NSApplication.shared.modalWindow != nil { return event }
-            self.hideMenu()
-            return event
-        }
+    private func startSpaceDismissal() {
         spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.hideMenu() }
         }
-        inactiveObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.hideMenu() }
-        }
     }
 
-    private func stopMenuDismissal() {
-        if let monitor = outsideClickMonitor { NSEvent.removeMonitor(monitor) }
-        if let monitor = localClickMonitor { NSEvent.removeMonitor(monitor) }
+    func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover, popover === menuPopover else { return }
         if let observer = spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
-        if let observer = inactiveObserver { NotificationCenter.default.removeObserver(observer) }
-        outsideClickMonitor = nil
-        localClickMonitor = nil
         spaceObserver = nil
-        inactiveObserver = nil
+        menuPopover = nil
+    }
+
+    func popoverShouldDetach(_ popover: NSPopover) -> Bool {
+        false
     }
 
     private func showWebsiteCheck() {

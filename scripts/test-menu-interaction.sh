@@ -21,4 +21,12 @@ swiftc -swift-version 5 -module-cache-path "$TEST_DIR/ModuleCache" \
     -Xlinker -rpath -Xlinker "$TEST_DIR" \
     "${APP_SOURCES[@]}" "$REPO_ROOT/app/ProxyCat/Tests/MenuInteractionTests.swift" \
     -o "$TEST_DIR/menu-tests"
-"$TEST_DIR/menu-tests"
+if ! "$TEST_DIR/menu-tests" > "$TEST_DIR/result.log" 2>&1; then
+    cat "$TEST_DIR/result.log"
+    exit 1
+fi
+cat "$TEST_DIR/result.log"
+if ! rg -q '^Passed isolated native menu ' "$TEST_DIR/result.log"; then
+    echo "Menu checks did not finish; run from a macOS GUI session with WindowServer access." >&2
+    exit 1
+fi

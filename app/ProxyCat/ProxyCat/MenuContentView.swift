@@ -86,9 +86,6 @@ struct MenuContentView: View {
             quitButton
                 .frame(height: 40)
         }
-        .background(VisualEffectView(material: .menu, blendingMode: .behindWindow))
-        .cornerRadius(8)
-        .shadow(radius: 4)
         .frame(width: 320)
         .onPreferenceChange(MenuContentHeightKey.self) { height in
             let measured = ceil(height)
@@ -1092,27 +1089,5 @@ struct MenuButton: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-    }
-}
-
-// Helper for menu background
-struct VisualEffectView: NSViewRepresentable {
-    let material: NSVisualEffectView.Material
-    let blendingMode: NSVisualEffectView.BlendingMode
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = blendingMode
-        view.state = .active
-        view.wantsLayer = true
-        view.layer?.cornerRadius = 8
-        view.layer?.masksToBounds = true
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = material
-        nsView.blendingMode = blendingMode
     }
 }
