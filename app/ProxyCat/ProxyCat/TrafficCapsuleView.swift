@@ -16,6 +16,12 @@ struct TrafficCapsuleView: View {
         return .green
     }
 
+    private var expirationTint: Color {
+        if presentation.expirationIsUrgent { return .red }
+        if presentation.expirationNeedsAttention { return .orange }
+        return .secondary
+    }
+
     var body: some View {
         Button { showingDetails.toggle() } label: {
             HStack(spacing: 5) {
@@ -34,6 +40,12 @@ struct TrafficCapsuleView: View {
                             .monospacedDigit()
                             .foregroundColor(.primary)
                     }
+                    if let expiration = presentation.expirationSummary {
+                        Text(expiration)
+                            .font(.system(size: 9))
+                            .monospacedDigit()
+                            .foregroundColor(expirationTint)
+                    }
                 }
                 .lineLimit(1)
             }
@@ -43,7 +55,7 @@ struct TrafficCapsuleView: View {
         .buttonStyle(PlainButtonStyle())
         .fixedSize()
         .help(presentation.help)
-        .accessibilityLabel("订阅流量，\(presentation.label)")
+        .accessibilityLabel(["订阅流量，\(presentation.label)", presentation.expirationSummary].compactMap { $0 }.joined(separator: "，"))
         .popover(isPresented: $showingDetails, arrowEdge: .bottom) {
             details
         }
@@ -67,7 +79,7 @@ struct TrafficCapsuleView: View {
                     detailRow("剩余", traffic.remaining.map(TrafficPresentation.bytes) ?? "未提供上限")
                     detailRow("已用", TrafficPresentation.bytes(traffic.used))
                     detailRow("总量", traffic.total > 0 ? TrafficPresentation.bytes(traffic.total) : "未提供上限")
-                    detailRow("到期", traffic.expirationDate?.formatted(date: .abbreviated, time: .omitted) ?? "未提供")
+                    detailRow("到期", traffic.expirationDate?.formatted(date: .abbreviated, time: .shortened) ?? "未提供")
                 } else {
                     Text(profile.trafficCheckedAt == nil ? "刷新以查询套餐流量。" : "订阅未返回可用的流量信息。")
                         .foregroundColor(.secondary)

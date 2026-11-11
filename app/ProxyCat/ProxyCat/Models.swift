@@ -193,6 +193,29 @@ struct TrafficPresentation {
         refreshError != nil || checkedAt.map { now.timeIntervalSince($0) >= 30 * 60 } != false
     }
     var isExpired: Bool { traffic?.expirationDate.map { $0 <= now } ?? false }
+    var expirationSummary: String? {
+        guard let traffic else { return nil }
+        guard let expiration = traffic.expirationDate else { return "到期时间未提供" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = Calendar.current.isDate(expiration, equalTo: now, toGranularity: .year) ? "M/d" : "yyyy/M/d"
+        let date = formatter.string(from: expiration)
+        if isStale { return "上次：\(date) 到期" }
+        let remaining = expiration.timeIntervalSince(now)
+        if remaining <= 0 { return "\(date) 已到期" }
+        if remaining < 24 * 60 * 60 { return "\(date) 到期 · 不足1天" }
+        let days = Int(ceil(remaining / (24 * 60 * 60)))
+        return "\(date) 到期 · 剩\(days)天"
+    }
+    var expirationNeedsAttention: Bool {
+        guard !isStale, let expiration = traffic?.expirationDate else { return false }
+        return expiration.timeIntervalSince(now) <= 7 * 24 * 60 * 60
+    }
+    var expirationIsUrgent: Bool {
+        guard !isStale, let expiration = traffic?.expirationDate else { return false }
+        return expiration.timeIntervalSince(now) <= 24 * 60 * 60
+    }
     var fraction: Double? { isExpired ? 0 : traffic?.remainingFraction }
     var warning: TrafficWarning? {
         guard !isStale, traffic != nil else { return nil }
@@ -232,6 +255,9 @@ struct TrafficPresentation {
             if let remaining = traffic.remaining { lines.append("剩余 \(Self.bytes(remaining)) / 总量 \(Self.bytes(traffic.total))") }
             else { lines.append("订阅未提供流量上限") }
             lines.append("已用 \(Self.bytes(traffic.used))")
+            if let expiration = traffic.expirationDate {
+                lines.append("到期 \(expiration.formatted(date: .abbreviated, time: .shortened))")
+            }
         } else {
             lines.append(profile.trafficCheckedAt == nil ? "点击查询订阅流量" : "订阅未返回可用的流量信息")
         }

@@ -282,12 +282,13 @@ struct ConnectionRecoveryTests {
         try await closingRecordsDiscardsPendingObservation()
         try await unavailableProcessLookupKeepsConnectionRecords()
         try trafficPresentationKeepsUnknownAndExhaustedStatesHonest()
+        try subscriptionExpirationIsVisibleAndKeepsCachedDatesHonest()
         try await trafficRefreshIsIndependentAndThrottled()
         try await failedTrafficRefreshPreservesOnlyCachedUsage()
         try await tunProgressArrivesBeforeTheCommandFinishes()
         try await menuBarTrafficWarningsPreserveConnectionColors()
         try await nodeNamesAreFormattedOnlyForDisplay()
-        print("Passed 50 connection, website, node, mode, TUN, menu bar, update and subscription traffic regression tests")
+        print("Passed 51 connection, website, node, mode, TUN, menu bar, update and subscription traffic regression tests")
     }
 
     static func trafficPresentationKeepsUnknownAndExhaustedStatesHonest() throws {
@@ -309,6 +310,52 @@ struct ConnectionRecoveryTests {
         try expect(TrafficPresentation(profile: plan, now: now).fraction == nil, "Zero total does not prove unlimited or full allowance")
         plan.traffic = SubscriptionTraffic(upload: 0, download: 0, total: 100, expire: 1)
         try expect(TrafficPresentation(profile: plan, now: now).isExpired, "Expiry is separate from byte allowance")
+    }
+
+    static func subscriptionExpirationIsVisibleAndKeepsCachedDatesHonest() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-11-11T10:00:00Z")!
+        var plan = Profile(id: "plan", name: "Plan", url: "", createdAt: "", updatedAt: "", active: true)
+        plan.trafficCheckedAt = ISO8601DateFormatter().string(from: now)
+        func display(expiringIn interval: TimeInterval) -> TrafficPresentation {
+            plan.traffic = SubscriptionTraffic(upload: 10, download: 20, total: 100,
+                                               expire: Int64(now.addingTimeInterval(interval).timeIntervalSince1970))
+            return TrafficPresentation(profile: plan, now: now)
+        }
+        let day: TimeInterval = 24 * 60 * 60
+        let upcoming = display(expiringIn: 3 * day + 60)
+        try expect(upcoming.expirationSummary?.contains("剩4天") == true && upcoming.expirationSummary?.contains("到期") == true,
+                   "The closed allowance control must expose the expiry date and round partial days up")
+        try expect(upcoming.expirationNeedsAttention && !upcoming.expirationIsUrgent,
+                   "Expiry within seven days needs a subtle warning separate from low traffic")
+        let distant = display(expiringIn: 10 * day)
+        try expect(!distant.expirationNeedsAttention && !distant.expirationIsUrgent,
+                   "A distant expiration must keep the normal secondary text color")
+        let tomorrow = display(expiringIn: day)
+        try expect(tomorrow.expirationSummary?.contains("剩1天") == true && tomorrow.expirationIsUrgent,
+                   "Exactly one day must not be described as less than a day")
+        let today = display(expiringIn: 60)
+        try expect(today.expirationSummary?.contains("不足1天") == true && today.expirationIsUrgent,
+                   "A subscription expiring in minutes must not appear to have a whole day left")
+        let expired = display(expiringIn: -60)
+        try expect(expired.expirationSummary?.contains("已到期") == true && expired.expirationIsUrgent,
+                   "Passed expiry must be explicit instead of showing a negative countdown")
+        var cached = display(expiringIn: 60)
+        cached.refreshError = "failed"
+        try expect(cached.expirationSummary?.hasPrefix("上次：") == true && !cached.expirationNeedsAttention && !cached.expirationIsUrgent,
+                   "A failed refresh must identify the previous expiry date without a current warning")
+        var old = display(expiringIn: 60)
+        old.now = now.addingTimeInterval(31 * 60)
+        try expect(old.expirationSummary?.hasPrefix("上次：") == true && !old.expirationIsUrgent,
+                   "Expired metadata must not claim that a possibly renewed subscription is currently expired")
+        let crossYear = display(expiringIn: 400 * day)
+        try expect(crossYear.expirationSummary?.contains("2027/") == true,
+                   "An expiration outside the current year must include its year")
+        plan.traffic = SubscriptionTraffic(upload: 0, download: 0, total: 100)
+        try expect(TrafficPresentation(profile: plan, now: now).expirationSummary == "到期时间未提供",
+                   "Missing provider expiry must remain unknown, never inferred from allowance")
+        plan.traffic = nil
+        try expect(TrafficPresentation(profile: plan, now: now).expirationSummary == nil && TrafficPresentation(profile: nil).expirationSummary == nil,
+                   "No subscription metadata must not invent an expiration line")
     }
 
     @MainActor
