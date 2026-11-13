@@ -91,6 +91,25 @@ func TestActivateWritesConfig(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteSetPreservesAllFilesOnInvalidTarget(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.yaml")
+	if err := os.WriteFile(first, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	invalid := filepath.Join(dir, "invalid.yaml")
+	if err := os.Mkdir(invalid, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteSet(map[string][]byte{first: []byte("new"), invalid: []byte("data")}, 0644); err == nil {
+		t.Fatal("expected non-file target error")
+	}
+	data, err := os.ReadFile(first)
+	if err != nil || string(data) != "old" {
+		t.Fatalf("first file changed after rejected transaction: %q, %v", data, err)
+	}
+}
+
 func TestNextID(t *testing.T) {
 	dir := t.TempDir()
 	id1 := NextID(dir)

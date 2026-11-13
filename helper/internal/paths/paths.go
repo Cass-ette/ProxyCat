@@ -22,6 +22,8 @@ type RuntimePaths struct {
 	MihomoLog         string `json:"mihomoLog"`
 	Reports           string `json:"reports"`
 	DiagnoseLatest    string `json:"diagnoseLatest"`
+	MaintenanceJSON   string `json:"maintenanceJson"`
+	PreferencesJSON   string `json:"preferencesJson"`
 }
 
 func Default() (RuntimePaths, error) {
@@ -55,5 +57,7 @@ func ForHome(home string) RuntimePaths {
 		MihomoLog:         filepath.Join(logs, "mihomo.log"),
 		Reports:           reports,
 		DiagnoseLatest:    filepath.Join(reports, "diagnose-latest.json"),
+		MaintenanceJSON:   filepath.Join(config, "maintenance.json"),
+		PreferencesJSON:   filepath.Join(config, "preferences.json"),
 	}
 }

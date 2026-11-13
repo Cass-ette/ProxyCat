@@ -3,6 +3,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -106,7 +107,11 @@ func (c *Client) SetClient(client *http.Client) {
 
 // get performs an HTTP GET request and returns the response body.
 func (c *Client) get(path string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", c.baseURL+path, nil)
+	return c.getContext(context.Background(), path)
+}
+
+func (c *Client) getContext(ctx context.Context, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -125,7 +130,12 @@ func (c *Client) get(path string) (*http.Response, error) {
 
 // GetConfig retrieves the current configuration from the controller.
 func (c *Client) GetConfig() (*Config, error) {
-	resp, err := c.get("/configs")
+	return c.GetConfigContext(context.Background())
+}
+
+// GetConfigContext bounds read-only diagnostics without changing the core.
+func (c *Client) GetConfigContext(ctx context.Context) (*Config, error) {
+	resp, err := c.getContext(ctx, "/configs")
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +151,33 @@ func (c *Client) GetConfig() (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// ReloadConfig applies validated YAML to the existing ordinary core. Sending
+// content avoids asking a privileged TUN core to open a user-controlled path.
+func (c *Client) ReloadConfig(content []byte) error {
+	body, err := json.Marshal(map[string]string{"payload": string(content)})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPut, c.baseURL+"/configs", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.secret != "" {
+		req.Header.Set("Authorization", "Bearer "+c.secret)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("配置应用请求未完成：%w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		// Error bodies can contain subscription credentials; never relay them.
+		return fmt.Errorf("配置应用返回 HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (c *Client) SetMode(mode string) error {

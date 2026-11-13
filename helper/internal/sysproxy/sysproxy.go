@@ -189,11 +189,16 @@ func runNetworksetup(ctx context.Context, args ...string) error {
 
 // GetStatus returns the current system proxy status.
 func GetStatus() (*Status, error) {
+	return GetStatusContext(context.Background())
+}
+
+// GetStatusContext only reads settings, with cancellation for diagnostics.
+func GetStatusContext(ctx context.Context) (*Status, error) {
 	if runtime.GOOS != "darwin" {
 		return nil, fmt.Errorf("system proxy control is only supported on macOS")
 	}
 
-	output, err := exec.Command("scutil", "--proxy").Output()
+	output, err := exec.CommandContext(ctx, "scutil", "--proxy").Output()
 	if err != nil {
 		return nil, fmt.Errorf("get proxy status: %w", err)
 	}

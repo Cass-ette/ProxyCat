@@ -38,6 +38,29 @@ struct WebsiteCheckView: View {
                     .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.secondary.opacity(0.08)).cornerRadius(8)
 
+                    if viewModel.websiteResultIsCurrent, result.route != "unknown", result.route != "reject" {
+                        Menu {
+                            Button("此网站总是走代理") { Task { await viewModel.setWebsitePreference(host: result.host, route: "proxy") } }
+                            Button("此网站总是直连") { Task { await viewModel.setWebsitePreference(host: result.host, route: "direct") } }
+                            if viewModel.websitePreference(for: result.host) != nil {
+                                Divider()
+                                Button("恢复订阅默认") { Task { await viewModel.removeWebsitePreference(host: result.host) } }
+                            }
+                        } label: {
+                            Label("网站规则", systemImage: "line.3.horizontal.decrease.circle")
+                        }
+                        .disabled(viewModel.websitePreferenceBusy)
+                        Text("域名规则包含此域名及其子域名；仅在规则模式下参与分流。IP 地址规则只匹配该 IP。")
+                            .font(.caption).foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let preference = viewModel.websitePreference(for: result.host) {
+                            Text("已保存为总是\(preference.route == "proxy" ? "走代理" : "直连")。")
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+                    }
+
+                    WebsitePreferenceFeedbackView(viewModel: viewModel, host: result.host)
+
                     if result.connectionFailed && result.route == "proxy" && viewModel.websiteResultIsCurrent {
                         if !viewModel.websiteRecoveryGroups.isEmpty {
                             Menu {
@@ -134,5 +157,31 @@ struct WebsiteCheckView: View {
             Text(value).textSelection(.enabled)
             Spacer(minLength: 0)
         }.font(.callout)
+    }
+}
+
+struct WebsitePreferenceFeedbackView: View {
+    @ObservedObject var viewModel: StatusViewModel
+    let host: String
+
+    var body: some View {
+        if viewModel.websitePreferenceFeedbackHost == WebsitePreference.hostKey(host) {
+            VStack(alignment: .leading, spacing: 4) {
+                if viewModel.isSavingWebsitePreference {
+                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("正在应用或验证网站偏好…") }
+                }
+                if let status = viewModel.websitePreferenceStatus {
+                    Text(status).foregroundColor(status.contains("失败") || status.contains("尚未验证") ? .orange : .secondary)
+                }
+                if let result = viewModel.websitePreferenceVerification {
+                    Text("本次路径：\(result.routeLabel) · \(result.reason)")
+                    Text("命中：\(result.rule.isEmpty ? "未捕获" : result.rule) \(result.rulePayload)")
+                    if !result.chains.isEmpty {
+                        Text("节点链：\(result.chains.reversed().map(ProxyDisplay.name).joined(separator: " → "))")
+                    }
+                }
+            }
+            .font(.caption).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

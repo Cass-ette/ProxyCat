@@ -61,7 +61,7 @@ struct ConnectionsView: View {
                                 }.padding(.horizontal, 4)
                                 VStack(spacing: 0) {
                                     ForEach(group.entries) { entry in
-                                        ConnectionRow(entry: entry, isStale: viewModel.connectionLogError != nil)
+                                        ConnectionRow(entry: entry, isStale: viewModel.connectionLogError != nil, viewModel: viewModel)
                                         if entry.id != group.entries.last?.id { Divider().padding(.horizontal, 12) }
                                     }
                                 }
@@ -98,6 +98,7 @@ struct ConnectionsView: View {
 private struct ConnectionRow: View {
     let entry: ConnectionLogEntry
     let isStale: Bool
+    @ObservedObject var viewModel: StatusViewModel
     @State private var showingDetails = false
     private var connection: ConnectionRecord { entry.connection }
 
@@ -108,6 +109,23 @@ private struct ConnectionRow: View {
                 Text("规则：\(connection.rule.isEmpty ? "未提供" : connection.rule) \(connection.rulePayload)")
                 Text("节点链：\(connection.chains.isEmpty ? "未提供" : connection.chains.reversed().map(ProxyDisplay.name).joined(separator: " → "))")
                 Text("最近观察：\(entry.lastSeen.formatted(date: .omitted, time: .standard))")
+                if !["", "未知目标"].contains(connection.host) {
+                    Menu {
+                        Button("此网站总是走代理") { Task { await viewModel.setWebsitePreference(host: connection.host, route: "proxy") } }
+                        Button("此网站总是直连") { Task { await viewModel.setWebsitePreference(host: connection.host, route: "direct") } }
+                        if viewModel.websitePreference(for: connection.host) != nil {
+                            Divider()
+                            Button("恢复订阅默认") { Task { await viewModel.removeWebsitePreference(host: connection.host) } }
+                        }
+                    } label: { Label("网站分流偏好", systemImage: "line.3.horizontal.decrease.circle") }
+                    .disabled(viewModel.websitePreferenceBusy)
+                    Text("域名包含子域名；IP 仅匹配自身。仅规则模式生效。")
+                        .font(.caption).foregroundColor(.secondary)
+                    if let preference = viewModel.websitePreference(for: connection.host) {
+                        Text("已设为总是\(preference.route == "proxy" ? "走代理" : "直连")")
+                    }
+                    WebsitePreferenceFeedbackView(viewModel: viewModel, host: connection.host)
+                }
             }
             .font(.caption).foregroundColor(.secondary).textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)

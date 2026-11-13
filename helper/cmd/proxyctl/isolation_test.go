@@ -9,11 +9,17 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Cass-ette/ProxyCat/helper/internal/diagnose"
+	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
 )
 
 // CLI tests must never stop the developer's core or change their system proxy.
 // Keep runtime files private, replace OS mutations, and deny the live ports.
 func TestMain(m *testing.M) {
+	// Runtime diagnosis has its own fully injected tests; CLI shape tests must
+	// not dial the live 7890 port or inspect the user's running core.
+	diagnoseReport = func(_ context.Context, p paths.RuntimePaths) diagnose.Report { return diagnose.RunStatic(p) }
 	// Subprocess watchdog fixtures keep every temporary HOME under the parent
 	// test directory, including the one whose parent is intentionally SIGKILLed.
 	directory, err := os.MkdirTemp(os.Getenv("PROXYCAT_TEST_WATCH_BASE"), "proxycat-cli-test-")
@@ -58,7 +64,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestLifecycleCommandsShareLockWithoutBlockingSupervisor(t *testing.T) {
-	for _, args := range [][]string{{"bootstrap", "https://example.invalid"}, {"tun", "on"}, {"tun", "off"}, {"core", "start"}, {"core", "stop"}, {"core", "restart"}, {"system-proxy", "on"}, {"system-proxy", "off"}} {
+	for _, args := range [][]string{{"bootstrap", "https://example.invalid"}, {"subscription", "add", "https://example.invalid"}, {"subscription", "update"}, {"preferences", "set", "proxy", "example.invalid"}, {"mode", "set", "rule"}, {"groups", "select", "Proxy", "Node"}, {"config", "generate"}, {"profile", "activate", "test"}, {"profile", "delete", "test"}, {"tun", "on"}, {"tun", "off"}, {"core", "start"}, {"core", "stop"}, {"core", "restart"}, {"system-proxy", "on"}, {"system-proxy", "off"}} {
 		if !needsLifecycleLock(args) {
 			t.Fatalf("unserialized lifecycle command: %v", args)
 		}

@@ -35,16 +35,21 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 # still require an Apple developer account.
 ditto "$APP_PATH" "$WORK_DIR/ProxyCat.app"
 bash "$SCRIPT_DIR/adhoc-sign.sh" "$WORK_DIR/ProxyCat.app"
+bash "$SCRIPT_DIR/build-installer.sh" "$WORK_DIR/ProxyCat.app" "$WORK_DIR/安装 ProxyCat.app"
 
 DMG_NAME="ProxyCat-$VERSION.dmg"
 "$TOOLS_DIR/bin/dmgbuild" \
     -s "$SCRIPT_DIR/dmg/settings.py" \
     -D "app=$WORK_DIR/ProxyCat.app" \
+    -D "installer=$WORK_DIR/安装 ProxyCat.app" \
     -D "background=$SCRIPT_DIR/dmg/background.png" \
     "ProxyCat $VERSION" "$WORK_DIR/$DMG_NAME"
 
-hdiutil verify "$WORK_DIR/$DMG_NAME"
+# Verify the mounted filesystem: archive extraction can discard metadata that
+# invalidates a bundle's signature (for example com.apple.FinderInfo).
+(cd "$WORK_DIR" && shasum -a 256 "$DMG_NAME") > "$WORK_DIR/$DMG_NAME.sha256"
+bash "$SCRIPT_DIR/test-dmg.sh" "$WORK_DIR/$DMG_NAME"
 mv "$WORK_DIR/$DMG_NAME" "$DIST_DIR/$DMG_NAME"
-(cd "$DIST_DIR" && shasum -a 256 "$DMG_NAME") > "$DIST_DIR/$DMG_NAME.sha256"
+mv "$WORK_DIR/$DMG_NAME.sha256" "$DIST_DIR/$DMG_NAME.sha256"
 echo "DMG created: $DIST_DIR/$DMG_NAME"
-echo "Open the DMG and drag ProxyCat into Applications."
+echo "Open the DMG and drag ProxyCat to Applications; 安装 ProxyCat is an optional update installer."

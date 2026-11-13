@@ -71,6 +71,8 @@ private final class Fixture {
             'mode status') echo '{"mode":"rule"}' ;;
             'groups list') echo '{}' ;;
             'profile list') echo '[]' ;;
+            'maintenance status') echo '{"subscriptionLastAttempt":"2027-01-15T08:00:00Z"}' ;;
+            'preferences list') echo '{"preferences":[]}' ;;
             *) echo "$*" >> "$log" ;;
         esac
         """#.write(to: executable, atomically: true, encoding: .utf8)
@@ -116,7 +118,8 @@ struct CampusNetworkTests {
         let fixture = try Fixture()
         await fixture.viewModel.refreshStatus()
         await fixture.viewModel.refreshStatus()
-        try expect(fixture.commands == ["system-proxy off", "core stop"], "Disconnect once, proxy first")
+        let lifecycleActions = fixture.commands.filter { $0 == "system-proxy off" || $0 == "core stop" }
+        try expect(lifecycleActions == ["system-proxy off", "core stop"], "Disconnect once, proxy first; commands=\(fixture.commands)")
         try expect(!fixture.viewModel.coreRunning && !fixture.viewModel.systemProxyEnabled, "Publish disconnected status")
         try expect(fixture.prompts == 0, "Automatic mode must not prompt")
     }

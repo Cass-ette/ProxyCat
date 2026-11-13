@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -57,6 +58,88 @@ rules: ["DOMAIN,example.cn,DIRECT", "MATCH,Main"]
 	}
 	if _, err := configuration([]byte("[]"), "token", "", nil); err == nil {
 		t.Fatal("invalid configuration accepted")
+	}
+}
+
+func TestSyncGeoDataCopiesOnlyAllowlistedFilesWithUserOwnership(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	destination := filepath.Join(base, "destination")
+	if err := os.MkdirAll(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "GeoIP.dat"), []byte("new database"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "mihomo.log"), []byte("not geodata"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncGeoData(source, destination, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(destination, "GeoIP.dat"))
+	if err != nil || string(data) != "new database" {
+		t.Fatalf("synced file = %q, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "mihomo.log")); !os.IsNotExist(err) {
+		t.Fatalf("copied non-geodata file: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(destination, "GeoIP.dat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner, ok := info.Sys().(*syscall.Stat_t); !ok || int(owner.Uid) != os.Getuid() {
+		t.Fatalf("updated file has wrong owner: %#v", info.Sys())
+	}
+}
+
+func TestSyncGeoDataRejectsForeignDirectory(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	destination := filepath.Join(base, "destination")
+	if err := os.MkdirAll(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncGeoData(source, destination, os.Getuid()+1, os.Getgid()); err == nil {
+		t.Fatal("accepted a directory with another owner's UID")
+	}
+}
+
+func TestSyncGeoDataLeavesUnchangedDatabaseTimestampAlone(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	destination := filepath.Join(base, "destination")
+	if err := os.MkdirAll(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("same database contents")
+	for _, dir := range []string{source, destination} {
+		if err := os.WriteFile(filepath.Join(dir, "GeoIP.dat"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldTime := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(filepath.Join(destination, "GeoIP.dat"), oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncGeoData(source, destination, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(destination, "GeoIP.dat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(oldTime) {
+		t.Fatalf("unchanged database was rewritten: mtime %s, want %s", info.ModTime(), oldTime)
 	}
 }
 

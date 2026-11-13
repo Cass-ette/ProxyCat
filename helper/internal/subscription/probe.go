@@ -254,6 +254,22 @@ func summarizeProbeFailure(attempts []ProbeAttempt) (string, string) {
 	if len(unsupported) > 0 {
 		return "订阅下载成功，但包含 ProxyCat 暂不支持的节点协议：" + formatSchemeCounts(unsupported), "请优先复制 Clash/Mihomo/Clash Verge 订阅链接。"
 	}
+	for _, attempt := range attempts {
+		if attempt.Format != "download-error" || attempt.HTTPStatus == 0 {
+			continue
+		}
+		message := fmt.Sprintf("订阅服务器返回 HTTP %d，未取得可用订阅。", attempt.HTTPStatus)
+		switch {
+		case attempt.HTTPStatus == http.StatusUnauthorized || attempt.HTTPStatus == http.StatusForbidden:
+			return message, "访问被拒绝，请检查订阅链接是否过期或已失效。"
+		case attempt.HTTPStatus == http.StatusTooManyRequests:
+			return message, "请求过于频繁，请稍后重试。"
+		case attempt.HTTPStatus >= http.StatusInternalServerError:
+			return message, "订阅服务器暂时不可用，请稍后重试；持续失败可联系订阅服务提供方。"
+		default:
+			return message, "请检查订阅链接；若地址正确，请联系订阅服务提供方。"
+		}
+	}
 	return "无法导入这个订阅链接。", "请检查链接是否过期，或重新复制机场后台的 Clash/Mihomo 订阅链接。"
 }
 

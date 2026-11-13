@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: '^1.21'
+          go-version: '^1.25'
           cache-dependency-path: helper/go.sum
       - uses: actions/setup-python@v5
         with:
@@ -44,6 +44,7 @@ jobs:
           bash scripts/test-shutdown.sh
           bash scripts/test-campus-network.sh
           bash scripts/test-connection-recovery.sh
+          bash scripts/test-installer.sh
           bash scripts/package-unsigned_test.sh
           python3 scripts/test-update-manifest.py
 
@@ -51,7 +52,6 @@ jobs:
         run: |
           bash scripts/package-unsigned.sh
           VERSION="${RELEASE_TAG#v}"
-          bash scripts/test-dmg.sh "dist/ProxyCat-$VERSION.dmg"
           (cd helper && PROXYCAT_TEST_DMG="$GITHUB_WORKSPACE/dist/ProxyCat-$VERSION.dmg" go test ./internal/selfupdate -run '^TestInstallRealDMG$' -count=1)
 
       - name: Publish verified files
@@ -62,7 +62,7 @@ jobs:
           # Keep legacy updater assets so users can skip releases safely.
           ASSETS=("dist/ProxyCat-$VERSION.dmg" "dist/ProxyCat-$VERSION.dmg.sha256" "dist/ProxyCat-$VERSION-installer.zip" "dist/ProxyCat-$VERSION-installer.zip.sha256")
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          下载 DMG，打开后将 ProxyCat 拖到“应用程序”，再从“应用程序”启动。替换前请先退出旧版。
+          下载并打开 DMG，将 ProxyCat 拖到“应用程序”即可安装。更新旧版时，也可双击下方“安装 ProxyCat”，确认后等待旧版安全退出、安装并打开新版，订阅和设置保留。
 
           已安装的用户可在 ProxyCat 中选择“检查更新”，安装完成后按提示重启应用。更新器优先使用 DMG，并在安装前验证校验值和应用签名。
 

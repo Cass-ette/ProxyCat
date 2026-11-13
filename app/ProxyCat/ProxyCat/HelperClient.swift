@@ -211,7 +211,7 @@ actor HelperClient {
         }
 
         let id = UUID()
-        if ["core", "system-proxy", "tun"].contains(args.first ?? ""), args.dropFirst().first != "status" {
+        if ["core", "system-proxy", "tun", "subscription", "preferences", "mode", "groups"].contains(args.first ?? ""), args.dropFirst().first != "status" && args.dropFirst().first != "list" {
             lifecycleCommands[id] = command
         }
         defer { lifecycleCommands[id] = nil }
@@ -396,6 +396,38 @@ actor HelperClient {
     func updateSubscription() async -> Result<Void, HelperError> {
         let result = await runCommand(["subscription", "update"])
         return result.map { _ in () }
+    }
+
+    func getWebsitePreferences() async -> Result<WebsitePreferenceStore, HelperError> {
+        let result = await runCommand(["preferences", "list", "--json"])
+        return result.flatMap { data in
+            do { return .success(try JSONDecoder().decode(WebsitePreferenceStore.self, from: data)) }
+            catch { return .failure(.decodingFailed(error)) }
+        }
+    }
+
+    func setWebsitePreference(host: String, route: String) async -> Result<WebsitePreferenceResult, HelperError> {
+        let result = await runCommand(["preferences", "set", route, host, "--json"])
+        return result.flatMap { data in
+            do { return .success(try JSONDecoder().decode(WebsitePreferenceResult.self, from: data)) }
+            catch { return .failure(.decodingFailed(error)) }
+        }
+    }
+
+    func removeWebsitePreference(host: String) async -> Result<WebsitePreferenceResult, HelperError> {
+        let result = await runCommand(["preferences", "remove", host, "--json"])
+        return result.flatMap { data in
+            do { return .success(try JSONDecoder().decode(WebsitePreferenceResult.self, from: data)) }
+            catch { return .failure(.decodingFailed(error)) }
+        }
+    }
+
+    func getMaintenanceStatus() async -> Result<MaintenanceStatus, HelperError> {
+        let result = await runCommand(["maintenance", "status", "--json"])
+        return result.flatMap { data in
+            do { return .success(try JSONDecoder().decode(MaintenanceStatus.self, from: data)) }
+            catch { return .failure(.decodingFailed(error)) }
+        }
     }
 
     func checkForUpdate() async -> Result<UpdateEvent, HelperError> {

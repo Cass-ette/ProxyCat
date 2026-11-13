@@ -41,7 +41,7 @@ The menu bar app shows:
 
 ## Installation
 
-Download `ProxyCat-X.Y.Z.dmg` from [GitHub Releases](https://github.com/Cass-ette/ProxyCat/releases/latest), open it, and drag **ProxyCat** onto **Applications**. Quit any older running version before replacing it, then open ProxyCat from Applications. Its cat icon appears in the menu bar.
+Download `ProxyCat-X.Y.Z.dmg` from [GitHub Releases](https://github.com/Cass-ette/ProxyCat/releases/latest), open it, and drag **ProxyCat → Applications**. From 0.17.0, an optional **安装 ProxyCat** below the standard drag-and-drop row can also update an existing installation: it shows both versions and, after confirmation, asks the old app to quit safely, installs the new app and opens it. It preserves subscriptions/settings and works with shared internal test packages without GitHub. A refused or timed-out quit stops installation; it never force-kills the proxy. See [offline installation](docs/offline-installation.md).
 
 The app is not yet Developer ID signed or notarized. If macOS blocks the first launch, open **System Settings → Privacy & Security → Open Anyway**. A DMG does not remove that requirement.
 
@@ -68,6 +68,8 @@ Run the macOS policy and lifecycle regressions with `bash scripts/test-campus-ne
 The [network recovery notes](docs/network-recovery.md) describe the independent system-proxy guard, its isolated tests, and the distinction between crash recovery and normal shutdown.
 
 Run connection recovery regressions with `bash scripts/test-connection-recovery.sh`. These also use isolated fake helpers, including simulated controller failures and network transitions.
+
+**运行诊断** separates file checks, runtime checks and one real HTTPS request through the local proxy. A living Mihomo process does not certify port 7890; missing listeners, unavailable controllers and unperformed network checks have separate results. The report shows its observation time and does not certify all websites or application traffic. TUN can be active while the system proxy is off. Diagnosis itself is read-only. Explicit recovery actions reuse the existing lifecycle lock and TUN safeguards, then rerun diagnosis; command completion alone never means the connection is fixed. Network, mode, node, profile and core changes invalidate older results. An older helper that only returns file checks is labelled as not having verified networking.
 
 Run menu interaction checks with `bash scripts/test-menu-interaction.sh` from a macOS GUI session. A separate test process verifies subscription typing, Command-A/V/C/X editing shortcuts, expanding/collapsing content, child windows, nested native popovers, outside clicks, Space-change notifications and Escape with isolated preferences and automatic network refresh disabled; it restores the clipboard and never starts the installed app or its core.
 

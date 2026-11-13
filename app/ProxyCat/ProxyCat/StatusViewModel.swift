@@ -44,7 +44,12 @@ class StatusViewModel: ObservableObject {
     @Published var diagnoseReport: DiagnoseReport?
     @Published private(set) var diagnosisNeedsRefresh = false
     @Published private(set) var isDiagnosing = false
+    @Published private(set) var isRecoveringDiagnosis = false
     private var networkFeedbackRevision: UInt64 = 0
+    private var coreStatusReadable: Bool?
+    private var systemProxyStatusReadable: Bool?
+    private var modeStatusReadable: Bool?
+    private var proxyGroupsReadable: Bool?
     @Published var proxyDelays: [String: ProxyDelayResult] = [:]
     @Published var isTestingDelays = false
     @Published var toggleTestResult: ProxyDelayResult?
@@ -66,6 +71,13 @@ class StatusViewModel: ObservableObject {
     @Published var updatePublishedAt: String?
     @Published var showingCurrentReleaseNotes = true
     @Published var profiles: [Profile] = []
+    @Published var websitePreferences: [String: WebsitePreference] = [:]
+    @Published var websitePreferenceStatus: String?
+    @Published private(set) var isSavingWebsitePreference = false
+    @Published private(set) var websitePreferenceFeedbackHost: String?
+    @Published private(set) var websitePreferenceVerification: WebsiteCheckResult?
+    @Published var maintenanceStatus: MaintenanceStatus?
+    @Published private(set) var isUpdatingSubscription = false
     @Published private(set) var isRefreshingTraffic = false
     @Published private(set) var trafficRefreshError: String?
     private var trafficAttempts: [String: Date] = [:]
@@ -106,6 +118,8 @@ class StatusViewModel: ObservableObject {
     private let campusPrompt: (String) -> Bool
     private var refreshTimer: Timer?
     private var automaticUpdateCheckTask: Task<Void, Never>?
+    private var backgroundMaintenanceTask: Task<Void, Never>?
+    private var lastMaintenanceRefresh: Date?
     private var campusActionInProgress = false
     private var lastCampusPromptSSID: String?
     private lazy var locationDelegate = WiFiLocationDelegate { [weak self] in
@@ -165,6 +179,7 @@ class StatusViewModel: ObservableObject {
         refreshTimer?.invalidate()
         refreshTimer = nil
         automaticUpdateCheckTask?.cancel()
+        backgroundMaintenanceTask?.cancel()
         stopObservingConnections()
     }
 
@@ -232,11 +247,12 @@ class StatusViewModel: ObservableObject {
         let coreResult = await helper.getCoreStatus()
         switch coreResult {
         case .success(let status):
+            coreStatusReadable = true
             coreRunning = status.running
             corePID = status.pid
         case .failure(let error):
+            coreStatusReadable = false
             lastError = "Core: \(error.localizedDescription)"
-            invalidateNetworkFeedback()
         }
         invalidateChangedFeedback()
 
@@ -244,10 +260,11 @@ class StatusViewModel: ObservableObject {
         let proxyResult = await helper.getSystemProxyStatus()
         switch proxyResult {
         case .success(let status):
+            systemProxyStatusReadable = true
             systemProxyEnabled = status.socksEnabled || status.httpEnabled || status.httpsEnabled
         case .failure:
+            systemProxyStatusReadable = false
             systemProxyEnabled = false
-            invalidateNetworkFeedback()
         }
         invalidateChangedFeedback()
 
@@ -257,11 +274,12 @@ class StatusViewModel: ObservableObject {
         let modeResult = await helper.getModeStatus()
         switch modeResult {
         case .success(let status):
+            modeStatusReadable = true
             currentMode = status.mode
             tunEnabled = coreRunning && status.tunEnabled == true
             tunDevice = status.tunDevice ?? ""
         case .failure:
-            invalidateNetworkFeedback()
+            modeStatusReadable = false
             if !coreRunning { currentMode = "rule"; tunEnabled = false; tunDevice = "" }
         }
         invalidateChangedFeedback()
@@ -270,13 +288,14 @@ class StatusViewModel: ObservableObject {
         let groupsResult = await helper.getProxyGroups()
         switch groupsResult {
         case .success(let groups) where !groups.isEmpty || !coreRunning:
+            proxyGroupsReadable = true
             updateProxyGroups(coreRunning ? groups : [])
             proxyGroupsError = nil
         case .success:
+            proxyGroupsReadable = false
             proxyGroupsError = "节点组暂未就绪，已保留上次的节点列表。"
-            invalidateNetworkFeedback()
         case .failure(let error):
-            invalidateNetworkFeedback()
+            proxyGroupsReadable = false
             // A controller request can fail while switching networks or loading
             // a config. Keep the last selection until the core actually stops.
             if coreRunning {
@@ -290,9 +309,12 @@ class StatusViewModel: ObservableObject {
 
         await loadProfiles()
         invalidateChangedFeedback()
+        await refreshMaintenanceStatusIfNeeded()
+        if websitePreferences.isEmpty { await loadWebsitePreferences() }
         if websitePreviousMode != nil && currentMode != "global" { websitePreviousMode = nil }
         recordNodeChanges()
         scheduleAutomaticUpdateCheck()
+        scheduleBackgroundSubscriptionUpdate()
     }
 
     func addCurrentWiFiToCampusNetworks() {
@@ -343,7 +365,6 @@ class StatusViewModel: ObservableObject {
         }
 
         campusActionInProgress = true
-        invalidateNetworkFeedback()
         defer { campusActionInProgress = false }
         if campusNetworkAction == .prompt {
             guard lastCampusPromptSSID != ssid else { return }
@@ -352,6 +373,7 @@ class StatusViewModel: ObservableObject {
             guard campusPrompt(ssid) else { return }
         }
 
+        invalidateNetworkFeedback()
         let result = await helper.disconnectForCampusNetwork()
         switch result {
         case .success:
@@ -385,7 +407,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func enableSystemProxy() async {
-        guard !isToggleTesting, !isChangingMode, !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !isToggleTesting, !isChangingMode, !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
         invalidateNetworkFeedback()
         isToggleTesting = true
         toggleTestResult = nil
@@ -519,6 +541,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func disableSystemProxy() async {
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis else { return }
         invalidateNetworkFeedback()
         let result = await helper.disableSystemProxy()
         if case .failure(let error) = result {
@@ -528,7 +551,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func startCore() async {
-        guard canStartProxyOnCurrentNetwork() else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
         invalidateNetworkFeedback()
         let result = await helper.startCore()
         if case .failure(let error) = result {
@@ -538,6 +561,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func stopCore() async {
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis else { return }
         invalidateNetworkFeedback()
         let result = await helper.stopCore()
         if case .failure(let error) = result {
@@ -547,7 +571,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func restartCore() async {
-        guard !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
         invalidateNetworkFeedback()
         let result = await helper.restartCore()
         if case .failure(let error) = result {
@@ -557,7 +581,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func setMode(_ mode: String) async {
-        guard !isChangingMode, !isToggleTesting, !isChangingTUN else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !isChangingMode, !isToggleTesting, !isChangingTUN else { return }
         invalidateNetworkFeedback()
         isChangingMode = true
         defer { isChangingMode = false }
@@ -577,7 +601,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func uninstallTUNHelper() async {
-        guard !tunEnabled, !isChangingTUN, !isBootstrapping else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !tunEnabled, !isChangingTUN, !isBootstrapping else { return }
         isChangingTUN = true
         lastError = nil
         defer { isChangingTUN = false }
@@ -587,7 +611,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func setTUNEnabled(_ enabled: Bool) async {
-        guard !isChangingTUN, !isChangingMode, !isToggleTesting, !isBootstrapping else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !isChangingTUN, !isChangingMode, !isToggleTesting, !isBootstrapping else { return }
         if enabled && !canStartProxyOnCurrentNetwork() { return }
         invalidateNetworkFeedback()
         isChangingTUN = true
@@ -627,6 +651,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func selectProxy(group: String, proxy: String) async {
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis else { return }
         invalidateNetworkFeedback()
         selectionInProgress = true
         nodeBaseline = nil
@@ -652,7 +677,7 @@ class StatusViewModel: ObservableObject {
     }
 
     private func recordNodeChanges() {
-        guard coreRunning, !isChangingMode, !isChangingTUN, !isBootstrapping, !selectionInProgress, proxyGroupsError == nil else {
+        guard coreRunning, !isSavingWebsitePreference, !isUpdatingSubscription, !isChangingMode, !isChangingTUN, !isBootstrapping, !selectionInProgress, proxyGroupsError == nil else {
             nodeBaseline = nil
             return
         }
@@ -671,7 +696,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func checkWebsite(_ input: String) async {
-        guard !isCheckingWebsite else { return }
+        guard !isSavingWebsitePreference, !isCheckingWebsite, !isUpdatingSubscription else { return }
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         lastWebsiteInput = trimmed
@@ -729,7 +754,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func testConnection() async {
-        guard !isChangingTUN, !isChangingMode, !isBootstrapping else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !isChangingTUN, !isChangingMode, !isBootstrapping else { return }
         let revision = networkFeedbackRevision
         let context = networkFeedbackContext
         let result = await helper.testConnection()
@@ -745,7 +770,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func testProxyDelays() async {
-        guard !isTestingDelays, !isChangingTUN, !isChangingMode, !isBootstrapping else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !isTestingDelays, !isChangingTUN, !isChangingMode, !isBootstrapping else { return }
         isTestingDelays = true
         defer { isTestingDelays = false }
         let revision = networkFeedbackRevision
@@ -763,10 +788,130 @@ class StatusViewModel: ObservableObject {
     }
 
     func updateSubscription() async {
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !isUpdatingSubscription, !isBootstrapping, !isToggleTesting, !isChangingTUN, !isChangingMode else { return }
+        isUpdatingSubscription = true
+        defer { isUpdatingSubscription = false }
         invalidateNetworkFeedback()
         let result = await helper.updateSubscription()
         if case .failure(let error) = result {
             lastError = "Update failed: \(error.localizedDescription)"
+        }
+        await loadProfiles()
+        await refreshMaintenanceStatus(force: true)
+        await refreshStatus()
+    }
+
+    func loadWebsitePreferences() async {
+        switch await helper.getWebsitePreferences() {
+        case .success(let store): websitePreferences = Dictionary(uniqueKeysWithValues: store.preferences.map { ($0.host, $0) })
+        case .failure: break
+        }
+    }
+
+    func websitePreference(for rawHost: String) -> WebsitePreference? {
+        websitePreferences[WebsitePreference.hostKey(rawHost)]
+    }
+
+    func maintenanceTime(_ raw: String?) -> String {
+        guard let raw, let date = ISO8601DateFormatter().date(from: raw) else { return "未知" }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    var websitePreferenceBusy: Bool {
+        isSavingWebsitePreference || isUpdatingSubscription || diagnosticActionBusy || isCheckingWebsite || isRecoveringWebsite
+    }
+
+    func setWebsitePreference(host: String, route: String) async {
+        await changeWebsitePreference(host: host, route: route)
+    }
+
+    func removeWebsitePreference(host: String) async {
+        await changeWebsitePreference(host: host, route: nil)
+    }
+
+    private func changeWebsitePreference(host: String, route: String?) async {
+        guard !websitePreferenceBusy, !isBootstrapping, !isToggleTesting else { return }
+        isSavingWebsitePreference = true
+        defer { isSavingWebsitePreference = false }
+        invalidateNetworkFeedback()
+        websitePreferenceFeedbackHost = WebsitePreference.hostKey(host)
+        websitePreferenceStatus = "正在保存并应用…"
+        let response = if let route {
+            await helper.setWebsitePreference(host: host, route: route)
+        } else {
+            await helper.removeWebsitePreference(host: host)
+        }
+        switch response {
+        case .success(let result):
+            await loadWebsitePreferences()
+            await refreshStatus()
+            await refreshMaintenanceStatus(force: true)
+            websitePreferenceStatus = result.message
+            guard result.applicationState == "applied" else { return }
+            guard currentMode == "rule" else {
+                websitePreferenceStatus = result.message + " 当前为全局或直连模式，网站偏好暂不参与分流。"
+                return
+            }
+            websitePreferenceStatus = result.message + " 正在实际访问并验证…"
+            let revision = networkFeedbackRevision
+            let key = WebsitePreference.hostKey(result.host)
+            // Reuse a manually entered URL for the same host, including its
+            // scheme and port; connection records have only a host to probe.
+            let input = WebsitePreference.hostKey(lastWebsiteInput) == key ? lastWebsiteInput
+                : (key.contains(":") ? "https://[\(key)]" : "https://\(key)")
+            let checked = await helper.checkWebsite(input)
+            guard revision == networkFeedbackRevision else {
+                websitePreferenceStatus = "网站偏好已保存；检测期间网络或配置发生变化，生效情况需重新验证。"
+                return
+            }
+            switch checked {
+            case .success(let evidence):
+                websitePreferenceVerification = evidence
+                if WebsitePreference.hostKey(websiteResult?.host ?? "") == key {
+                    websiteResult = evidence
+                    websiteContext = "\(activeProfileID ?? "")|\(currentMode)|\(corePID)"
+                }
+                if let route {
+                    websitePreferenceStatus = evidence.verifiesPreference(host: result.host, route: route)
+                        ? "已确认命中此网站的\(route == "proxy" ? "代理" : "直连")偏好。\(evidence.outcomeLabel)。"
+                        : "网站偏好已保存，但本次请求尚未验证命中；请查看路径证据或重新检测。"
+                } else {
+                    websitePreferenceStatus = "已移除该网站偏好。\(evidence.summary)"
+                }
+            case .failure(let error):
+                websitePreferenceStatus = "网站偏好已保存，但复测未完成：\(error.localizedDescription)"
+            }
+        case .failure(let error):
+            await refreshMaintenanceStatus(force: true)
+            websitePreferenceStatus = "\(route == nil ? "恢复" : "保存")失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func refreshMaintenanceStatusIfNeeded() async {
+        if let lastMaintenanceRefresh, dateProvider().timeIntervalSince(lastMaintenanceRefresh) < 60 { return }
+        await refreshMaintenanceStatus(force: true)
+    }
+
+    private func refreshMaintenanceStatus(force: Bool = false) async {
+        if !force, let lastMaintenanceRefresh, dateProvider().timeIntervalSince(lastMaintenanceRefresh) < 60 { return }
+        lastMaintenanceRefresh = dateProvider()
+        if case .success(let status) = await helper.getMaintenanceStatus() { maintenanceStatus = status }
+    }
+
+    private func scheduleBackgroundSubscriptionUpdate() {
+        guard backgroundMaintenanceTask == nil, !profiles.isEmpty, coreRunning, (systemProxyEnabled || tunEnabled),
+              !isSavingWebsitePreference, !isUpdatingSubscription, !isBootstrapping, !isChangingTUN, !isChangingMode, !isToggleTesting else { return }
+        let iso = ISO8601DateFormatter()
+        let previous = maintenanceStatus?.subscriptionLastAttempt ?? maintenanceStatus?.subscriptionLastSuccess
+        if let previous, let date = iso.date(from: previous) {
+            let interval: TimeInterval = maintenanceStatus?.subscriptionLastError == nil ? 24 * 60 * 60 : 30 * 60
+            let elapsed = dateProvider().timeIntervalSince(date)
+            if elapsed >= 0 && elapsed < interval { return }
+        }
+        backgroundMaintenanceTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.backgroundMaintenanceTask = nil }
+            await self.updateSubscription()
         }
     }
 
@@ -929,28 +1074,56 @@ class StatusViewModel: ObservableObject {
 
     private var networkFeedbackContext: String {
         let selections = proxyGroups.sorted { $0.name < $1.name }.map { "\($0.name)=\($0.now)" }
+        // A transition into or out of unreadable status invalidates evidence.
+        // Repeated failures in an unchanged stopped-core state do not: that is
+        // exactly when the user needs to read the report and use its recovery.
+        // First successful reads only initialize this bookkeeping; they must
+        // not erase a connection test that just established readiness itself.
+        let availability = [coreStatusReadable, systemProxyStatusReadable, modeStatusReadable, proxyGroupsReadable]
+            .map { $0 == false ? "unreadable" : "readable" }
         return ([currentWiFiSSID ?? "", String(coreRunning), String(corePID), String(systemProxyEnabled),
-                 String(tunEnabled), currentMode] + selections).joined(separator: "\n")
+                 String(tunEnabled), currentMode] + availability + selections).joined(separator: "\n")
     }
 
     private func invalidateNetworkFeedback() {
         networkFeedbackRevision &+= 1
+        websiteContext = ""
+        lastMaintenanceRefresh = nil
         if diagnoseReport != nil || isDiagnosing { diagnosisNeedsRefresh = true }
-        diagnoseReport = nil
+        // Keep the timestamped report as history. Freshness gates both its
+        // presentation and recovery buttons; deleting it makes failures flash
+        // away on the next automatic status refresh.
         testResult = nil
         toggleTestResult = nil
+        if websitePreferenceFeedbackHost != nil && !isSavingWebsitePreference {
+            websitePreferenceStatus = "网络或配置已变化，网站偏好需要重新验证。"
+        }
+        websitePreferenceVerification = nil
     }
 
     func runDiagnose() async {
-        guard !isDiagnosing, !isChangingTUN, !isChangingMode, !isBootstrapping else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis else { return }
+        await collectDiagnosis()
+    }
+
+    func clearDiagnosis() {
+        guard !isDiagnosing, !isRecoveringDiagnosis else { return }
+        diagnoseReport = nil
+        diagnosisNeedsRefresh = false
+    }
+
+    private func collectDiagnosis() async {
+        guard !isDiagnosing, !isChangingTUN, !isChangingMode, !isBootstrapping, !selectionInProgress else { return }
         isDiagnosing = true
         defer { isDiagnosing = false }
         let revision = networkFeedbackRevision
         let context = networkFeedbackContext
+        let profileID = activeProfileID
         let result = await helper.runDiagnose()
         // A result from before a switch must not erase its failure or certify
         // the new route. Refreshes also invalidate results on observed changes.
-        guard revision == networkFeedbackRevision, context == networkFeedbackContext else {
+        guard revision == networkFeedbackRevision, context == networkFeedbackContext, profileID == activeProfileID else {
+            if case .success(let report) = result { diagnoseReport = report }
             diagnosisNeedsRefresh = true
             return
         }
@@ -958,11 +1131,44 @@ class StatusViewModel: ObservableObject {
         case .success(let report):
             diagnoseReport = report
             diagnosisNeedsRefresh = false
-            lastError = nil
         case .failure(let error):
-            diagnoseReport = nil
-            lastError = "Diagnose failed: \(error.localizedDescription)"
+            if diagnoseReport != nil { diagnosisNeedsRefresh = true }
+            let failure = "诊断未完成：\(error.localizedDescription)"
+            if let previous = lastError {
+                if !previous.contains(failure) { lastError = previous + "\n" + failure }
+            } else { lastError = failure }
         }
+    }
+
+    var diagnosticActions: [DiagnosticAction] {
+        guard !diagnosisNeedsRefresh else { return [] }
+        return diagnoseReport?.actions ?? []
+    }
+
+    var diagnosticActionBusy: Bool {
+        isSavingWebsitePreference || isDiagnosing || isRecoveringDiagnosis || isChangingTUN || isChangingMode || isBootstrapping || isToggleTesting || selectionInProgress
+    }
+
+    func canPerformDiagnosticAction(_ action: DiagnosticAction) -> Bool {
+        !diagnosticActionBusy && diagnosticActions.contains(action) && !(action.changesNetwork && tunEnabled)
+    }
+
+    func performDiagnosticAction(_ action: DiagnosticAction) async {
+        guard action.changesNetwork, canPerformDiagnosticAction(action), canStartProxyOnCurrentNetwork() else { return }
+        isRecoveringDiagnosis = true
+        defer { isRecoveringDiagnosis = false }
+        invalidateNetworkFeedback()
+        lastError = nil
+        // core start uses EnsureProxyReady under the shared lifecycle lock.
+        // It also refuses to replace a TUN-owned core. No duplicate repair path.
+        let result = action == .recoverCore ? await helper.startCore() : await helper.enableSystemProxy()
+        if case .failure(let error) = result {
+            lastError = "\(action == .recoverCore ? "恢复本地代理" : "开启系统代理")失败：\(error.localizedDescription)"
+        }
+        await refreshStatus()
+        // Helper success only means the command completed. Always verify the
+        // chain again, and keep any command failure alongside its new report.
+        await collectDiagnosis()
     }
 
     func loadProfiles() async {
@@ -1013,7 +1219,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func activateProfile(id: String) async {
-        guard !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !isChangingTUN, canStartProxyOnCurrentNetwork() else { return }
         invalidateNetworkFeedback()
         let result = await helper.activateProfile(id: id)
         if case .failure(let error) = result {
@@ -1029,6 +1235,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func deleteProfile(id: String) async {
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis else { return }
         let result = await helper.deleteProfile(id: id)
         switch result {
         case .success:
@@ -1039,7 +1246,7 @@ class StatusViewModel: ObservableObject {
     }
 
     func bootstrap(subscriptionURL: String) async {
-        guard !isChangingTUN else { return }
+        guard !isSavingWebsitePreference, !isRecoveringDiagnosis, !isChangingTUN else { return }
         guard canStartProxyOnCurrentNetwork() else {
             bootstrapStatus = "校园网保护已阻止启动代理。"
             return
@@ -1050,7 +1257,6 @@ class StatusViewModel: ObservableObject {
         bootstrapStatus = "正在启动..."
         lastError = nil
         testResult = nil
-        diagnoseReport = nil
 
         let stream = await helper.bootstrap(subscriptionURL: subscriptionURL)
 

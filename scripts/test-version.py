@@ -33,7 +33,7 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(version.check(self.root, "v0.12.4", ["v0.12.3", "v0.12.4"]), ("0.12.4", 7))
 
     def test_bumps_reset_lower_components_and_increment_build(self):
-        for level, expected in (("patch", "0.12.5"), ("minor", "0.13.0"), ("major", "1.0.0")):
+        for level, expected in (("build", "0.12.4"), ("patch", "0.12.5"), ("minor", "0.13.0"), ("major", "1.0.0")):
             with self.subTest(level=level):
                 self.write_info("0.12.4", "7")
                 self.assertEqual(version.bump(level, self.root), (expected, 8))

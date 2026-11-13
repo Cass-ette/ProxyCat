@@ -1,9 +1,15 @@
 package tun
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -55,6 +61,7 @@ func serveAuthorizedSession(s session) (result error) {
 		return err
 	}
 	defer os.RemoveAll(rootDir)
+	defer func() { result = errors.Join(result, syncGeoData(rootDir, s.DataDirectory, s.UID, s.GID)) }()
 	// Users may traverse this directory to reach the control socket but cannot
 	// replace it, its executable, or its configuration.
 	if err := os.Chmod(rootDir, 0711); err != nil {
@@ -120,6 +127,147 @@ func serveAuthorizedSession(s session) (result error) {
 		return err == nil && Ready(cfg) && cfg.MixedPort == private.ProxyPort
 	}
 	return superviseWithCompanion(s, nil, launch, ready, ownerAlive, func() { relay.stop() }, relayFailed)
+}
+
+var geoDataFiles = []string{"GeoSite.dat", "GeoIP.dat", "geoip.metadb", "Country.mmdb", "ASN.mmdb"}
+
+func syncGeoData(sourceDir, destinationDir string, uid, gid int) error {
+	if destinationDir == "" || uid <= 0 || gid < 0 {
+		return nil
+	}
+	parentDir := filepath.Dir(destinationDir)
+	if err := ensureUserDirectory(parentDir, uid, gid); err != nil {
+		return err
+	}
+	info, err := os.Lstat(destinationDir)
+	if os.IsNotExist(err) {
+		if err := os.Mkdir(destinationDir, 0700); err != nil {
+			return err
+		}
+		if err := os.Chown(destinationDir, uid, gid); err != nil {
+			return err
+		}
+		info, err = os.Lstat(destinationDir)
+	}
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || int(stat.Uid) != uid {
+		return fmt.Errorf("拒绝写入不属于当前用户的地理库目录")
+	}
+	root, err := os.OpenRoot(destinationDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	for _, name := range geoDataFiles {
+		source, err := os.Open(filepath.Join(sourceDir, name))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		sourceInfo, statErr := source.Stat()
+		if statErr != nil || !sourceInfo.Mode().IsRegular() {
+			source.Close()
+			return fmt.Errorf("invalid geodata file")
+		}
+		unchanged, compareErr := sameGeoData(source, root, name)
+		if compareErr != nil {
+			source.Close()
+			return compareErr
+		}
+		if unchanged {
+			if err := source.Close(); err != nil {
+				return err
+			}
+			continue
+		}
+		var nonce [12]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			source.Close()
+			return err
+		}
+		tmp := ".proxycat-geo-" + hex.EncodeToString(nonce[:])
+		output, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			source.Close()
+			return err
+		}
+		_, copyErr := io.Copy(output, source)
+		sourceCloseErr := source.Close()
+		if copyErr == nil {
+			copyErr = output.Sync()
+		}
+		if copyErr == nil {
+			copyErr = output.Chown(uid, gid)
+		}
+		if copyErr == nil {
+			copyErr = output.Chmod(0644)
+		}
+		copyErr = errors.Join(copyErr, output.Close(), sourceCloseErr)
+		if copyErr != nil {
+			_ = root.Remove(tmp)
+			return copyErr
+		}
+		if err := root.Rename(tmp, name); err != nil {
+			_ = root.Remove(tmp)
+			return err
+		}
+	}
+	return nil
+}
+
+func sameGeoData(source *os.File, destination *os.Root, name string) (bool, error) {
+	info, err := destination.Lstat(name)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return false, nil
+	}
+	current, err := destination.Open(name)
+	if err != nil {
+		return false, err
+	}
+	defer current.Close()
+	sourceHash, currentHash := sha256.New(), sha256.New()
+	if _, err := io.Copy(sourceHash, source); err != nil {
+		return false, err
+	}
+	if _, err := io.Copy(currentHash, current); err != nil {
+		return false, err
+	}
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return false, err
+	}
+	return bytes.Equal(sourceHash.Sum(nil), currentHash.Sum(nil)), nil
+}
+
+func ensureUserDirectory(path string, uid, gid int) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		if err := os.Mkdir(path, 0700); err != nil {
+			return err
+		}
+		if err := os.Chown(path, uid, gid); err != nil {
+			return err
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || int(stat.Uid) != uid {
+		return fmt.Errorf("拒绝写入不属于当前用户的地理库目录")
+	}
+	return nil
 }
 
 func openOwnedFile(path string, uid, flags int) (*os.File, error) {

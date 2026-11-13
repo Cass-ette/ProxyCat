@@ -113,6 +113,19 @@ func websiteURL(input string) (*url.URL, error) {
 }
 
 func (c *Client) CheckWebsite(ctx context.Context, input string) (*WebsiteResult, error) {
+	return c.checkWebsite(ctx, input, 0)
+}
+
+// CheckWebsiteAtPort refuses a different listener if a handoff changes the
+// configuration between the diagnostic's initial checks and its real request.
+func (c *Client) CheckWebsiteAtPort(ctx context.Context, input string, expectedPort int) (*WebsiteResult, error) {
+	if expectedPort < 1 || expectedPort > 65535 {
+		return nil, errors.New("invalid expected proxy port")
+	}
+	return c.checkWebsite(ctx, input, expectedPort)
+}
+
+func (c *Client) checkWebsite(ctx context.Context, input string, expectedPort int) (*WebsiteResult, error) {
 	u, err := websiteURL(input)
 	if err != nil {
 		return nil, err
@@ -147,7 +160,7 @@ func (c *Client) CheckWebsite(ctx context.Context, input string) (*WebsiteResult
 	if port == 0 {
 		port = cfg.Port
 	}
-	if port < 1 || port > 65535 {
+	if port < 1 || port > 65535 || (expectedPort != 0 && port != expectedPort) {
 		result.Outcome = "proxyUnavailable"
 		return result, nil
 	}
