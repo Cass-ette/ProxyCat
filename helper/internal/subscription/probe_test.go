@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -151,6 +152,29 @@ func TestProbeReportsNetworkError(t *testing.T) {
 	}
 	if !strings.Contains(result.Message, "无法导入") {
 		t.Fatalf("message = %q, want generic failure", result.Message)
+	}
+}
+
+func TestProbeReportsHTTPFailureWithoutLeakingSubscriptionCredentials(t *testing.T) {
+	for _, test := range []struct {
+		status int
+		fix    string
+	}{{401, "访问被拒绝"}, {403, "访问被拒绝"}, {404, "检查订阅链接"}, {429, "请求过于频繁"}, {500, "服务器暂时不可用"}, {503, "服务器暂时不可用"}} {
+		t.Run(fmt.Sprint(test.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte("private server detail"))
+			}))
+			defer server.Close()
+			result := Probe(server.Client(), server.URL+"/subscription?token=private-token")
+			if result.Selected != nil || !strings.Contains(result.Message, fmt.Sprintf("HTTP %d", test.status)) || !strings.Contains(result.SuggestedFix, test.fix) {
+				t.Fatalf("HTTP failure was obscured: %+v", result)
+			}
+			visible := result.Message + result.SuggestedFix + result.URL
+			if strings.Contains(visible, "private-token") || strings.Contains(visible, "private server detail") {
+				t.Fatal("HTTP failure exposed subscription credentials or a response body")
+			}
+		})
 	}
 }
 

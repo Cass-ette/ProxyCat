@@ -20,7 +20,9 @@ import (
 	"github.com/Cass-ette/ProxyCat/helper/internal/core"
 	"github.com/Cass-ette/ProxyCat/helper/internal/diagnose"
 	"github.com/Cass-ette/ProxyCat/helper/internal/guard"
+	"github.com/Cass-ette/ProxyCat/helper/internal/maintenance"
 	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
+	"github.com/Cass-ette/ProxyCat/helper/internal/preferences"
 	"github.com/Cass-ette/ProxyCat/helper/internal/profile"
 	"github.com/Cass-ette/ProxyCat/helper/internal/redact"
 	"github.com/Cass-ette/ProxyCat/helper/internal/selfupdate"
@@ -149,7 +151,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			encoder := json.NewEncoder(stdout)
 			report = func(progress tun.Progress) { _ = encoder.Encode(progress) }
 		}
+		wasActiveTUN := tun.Active(p)
 		if args[1] == "on" {
+			if err := ensureGeoAutoUpdate(p); err != nil {
+				fmt.Fprintf(stderr, "prepare geodata update: %v\n", err)
+				return 1
+			}
 			err = tun.EnableWithProgress(p, os.Getppid(), report)
 		} else {
 			err = tun.DisableWithProgress(p, report)
@@ -157,6 +164,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
+		}
+		if (args[1] == "on" && !wasActiveTUN) || (args[1] == "off" && wasActiveTUN) {
+			_ = recordConfigApplication(p, configApplication{"applied", "已在本次 TUN 切换中应用保存的配置。"})
 		}
 		return 0
 	case "diagnose":
@@ -183,7 +193,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		case "list":
 			return runSubscriptionList(stdout, stderr)
 		case "update":
-			return runSubscriptionUpdate(stdout, stderr)
+			return runSubscriptionUpdate(stdout, stderr, jsonOutput)
 		case "probe":
 			if len(args) < 3 {
 				fmt.Fprintf(stderr, "subscription probe requires URL\n")
@@ -192,6 +202,36 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return runSubscriptionProbe(args[2], stdout, stderr, jsonOutput)
 		default:
 			fmt.Fprintf(stderr, "unknown subscription subcommand: %s\n", redact.String(args[1]))
+			return 2
+		}
+	case "maintenance":
+		if len(args) == 2 && args[1] == "status" {
+			return runMaintenanceStatus(stdout, stderr, jsonOutput)
+		}
+		fmt.Fprintln(stderr, "maintenance requires status")
+		return 2
+	case "preferences":
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "preferences requires list, set or remove")
+			return 2
+		}
+		switch args[1] {
+		case "list":
+			return runPreferencesList(stdout, stderr, jsonOutput)
+		case "set":
+			if len(args) != 4 {
+				fmt.Fprintln(stderr, "preferences set requires <proxy|direct> <host>")
+				return 2
+			}
+			return runPreferencesSet(args[2], args[3], stdout, stderr, jsonOutput)
+		case "remove":
+			if len(args) != 3 {
+				fmt.Fprintln(stderr, "preferences remove requires <host>")
+				return 2
+			}
+			return runPreferencesRemove(args[2], stdout, stderr, jsonOutput)
+		default:
+			fmt.Fprintf(stderr, "unknown preferences subcommand: %s\n", redact.String(args[1]))
 			return 2
 		}
 	case "config":
@@ -411,6 +451,18 @@ func needsLifecycleLock(args []string) bool {
 		return false
 	}
 	switch args[0] {
+	case "subscription":
+		return args[1] == "add" || args[1] == "update"
+	case "preferences":
+		return args[1] == "set" || args[1] == "remove"
+	case "mode":
+		return args[1] == "set"
+	case "groups":
+		return args[1] == "select"
+	case "config":
+		return args[1] == "generate"
+	case "profile":
+		return args[1] == "activate" || args[1] == "delete"
 	case "tun":
 		return args[1] == "on" || args[1] == "off" || args[1] == "install-helper" || args[1] == "uninstall-helper"
 	case "core":
@@ -446,6 +498,12 @@ func updateHTTPClient() *http.Client {
 		transport.Proxy = http.ProxyURL(&url.URL{Scheme: "http", Host: net.JoinHostPort(status.HTTPSHost, strconv.Itoa(status.HTTPSPort))})
 	}
 	return &http.Client{Transport: transport, Timeout: 90 * time.Second}
+}
+
+func validateRuntimeConfig(p paths.RuntimePaths, content []byte) error {
+	home := filepath.Dir(filepath.Dir(filepath.Dir(p.Base)))
+	dataDirectory := filepath.Join(home, ".config", "mihomo")
+	return config.ValidateWithMihomo(p.Mihomo, dataDirectory, content)
 }
 
 func runSelfUpdate(stdout io.Writer, stderr io.Writer, jsonOutput bool, checkOnly bool, expectedVersion string) int {
@@ -491,24 +549,7 @@ func runBootstrap(url string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	fmt.Fprintln(stdout, "Generating config...")
-	if exit := runConfigGenerateForProfile(profileID, stdout, stderr); exit != 0 {
-		return exit
-	}
-
-	// Activate: copy profile config to active config.yaml
-	runtimePaths, err := paths.Default()
-	if err != nil {
-		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
-		return 1
-	}
-	if err := profile.Activate(runtimePaths.ProfilesDir, profileID, runtimePaths.ConfigYAML); err != nil {
-		fmt.Fprintf(stderr, "activate profile: %v\n", err)
-		return 1
-	}
-
-	fmt.Fprintln(stdout, "Ensuring Mihomo core...")
-	if exit := runCoreInstall(stdout, stderr); exit != 0 {
+	if exit := prepareBootstrapProfile(profileID, stdout, stderr); exit != 0 {
 		return exit
 	}
 
@@ -536,6 +577,27 @@ func runBootstrap(url string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
+func prepareBootstrapProfile(profileID string, stdout, stderr io.Writer) int {
+	fmt.Fprintln(stdout, "Ensuring Mihomo core...")
+	if exit := runCoreInstall(stdout, stderr); exit != 0 {
+		return exit
+	}
+	fmt.Fprintln(stdout, "Generating config...")
+	if exit := runConfigGenerateForProfile(profileID, stdout, stderr); exit != 0 {
+		return exit
+	}
+	runtimePaths, err := paths.Default()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
+		return 1
+	}
+	if err := activateProfileWithPreferences(runtimePaths, profileID); err != nil {
+		fmt.Fprintf(stderr, "activate profile: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
 func waitForController(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	client := runtimeController()
@@ -551,6 +613,8 @@ func waitForController(timeout time.Duration) error {
 	return lastErr
 }
 
+var diagnoseReport = diagnose.Run
+
 func runDiagnose(args []string, jsonOutput bool, stdout io.Writer, stderr io.Writer) int {
 	for _, arg := range args {
 		fmt.Fprintf(stderr, "unknown diagnose flag: %s\n", redact.String(arg))
@@ -562,7 +626,7 @@ func runDiagnose(args []string, jsonOutput bool, stdout io.Writer, stderr io.Wri
 		fmt.Fprintf(stderr, "resolve runtime paths: %v\n", err)
 		return 1
 	}
-	report := diagnose.Run(runtimePaths)
+	report := diagnoseReport(context.Background(), runtimePaths)
 	if jsonOutput {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
@@ -574,6 +638,12 @@ func runDiagnose(args []string, jsonOutput bool, stdout io.Writer, stderr io.Wri
 	}
 
 	fmt.Fprintln(stdout, "ProxyCat Diagnose")
+	if report.ObservedAt != "" {
+		fmt.Fprintf(stdout, "Observed at: %s\n", report.ObservedAt)
+	}
+	if report.Scope != "" {
+		fmt.Fprintln(stdout, report.Scope)
+	}
 	for _, check := range report.Checks {
 		fmt.Fprintf(stdout, "- %s: %s - %s\n", check.Name, check.Status, check.Message)
 		if check.SuggestedFix != "" {
@@ -591,6 +661,8 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl subscription add <url>")
 	fmt.Fprintln(w, "  proxyctl subscription list")
 	fmt.Fprintln(w, "  proxyctl subscription update")
+	fmt.Fprintln(w, "  proxyctl maintenance status [--json]")
+	fmt.Fprintln(w, "  proxyctl preferences {list|set <proxy|direct> <host>|remove <host>} [--json]")
 	fmt.Fprintln(w, "  proxyctl subscription probe <url> [--json]")
 	fmt.Fprintln(w, "  proxyctl config generate")
 	fmt.Fprintln(w, "  proxyctl core {install|start|stop|restart|status}")
@@ -615,6 +687,8 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "  proxyctl profile delete <id>")
 }
 
+var installMihomoBinary = core.InstallMihomo
+
 func runCoreInstall(stdout io.Writer, stderr io.Writer) int {
 	runtimePaths, err := paths.Default()
 	if err != nil {
@@ -622,7 +696,7 @@ func runCoreInstall(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintln(stdout, "Installing Mihomo core...")
-	installedPath, err := core.InstallMihomo(runtimePaths.Mihomo)
+	installedPath, err := installMihomoBinary(runtimePaths.Mihomo)
 	if err != nil {
 		fmt.Fprintf(stderr, "install mihomo: %v\n", err)
 		return 1
@@ -642,17 +716,25 @@ func runCoreStart(stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "create logs directory: %v\n", err)
 		return 1
 	}
+	if err := ensureGeoAutoUpdate(runtimePaths); err != nil {
+		fmt.Fprintf(stderr, "prepare geodata update: %v\n", err)
+		return 1
+	}
 	if tun.Active(runtimePaths) {
 		fmt.Fprintln(stdout, "TUN core is already running")
 		return 0
 	}
 
+	wasRunning, previousPID, _ := core.Status()
 	pid, err := core.EnsureProxyReady(runtimePaths.Mihomo, runtimePaths.ConfigYAML, runtimePaths.MihomoLog)
 	if err != nil {
 		fmt.Fprintf(stderr, "start mihomo: %v\n", err)
 		return 1
 	}
 
+	if !wasRunning || pid != previousPID {
+		_ = recordConfigApplication(runtimePaths, configApplication{"applied", "已在本次启动中应用保存的配置。"})
+	}
 	fmt.Fprintf(stdout, "Mihomo started (pid: %d)\n", pid)
 	return 0
 }
@@ -709,6 +791,7 @@ func runCoreRestart(stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
+		_ = recordConfigApplication(p, configApplication{"applied", "已在本次 TUN 重启中应用保存的配置。"})
 		return 0
 	}
 	if exit := runCoreStop(stdout, stderr); exit != 0 {
@@ -793,6 +876,12 @@ func runSystemProxyOn(stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
 		return 1
 	}
+	if !tun.Active(p) {
+		if err := ensureGeoAutoUpdate(p); err != nil {
+			fmt.Fprintf(stderr, "prepare geodata update: %v\n", err)
+			return 1
+		}
+	}
 	const port = 7890
 	err = enableSystemProxy(p, port, systemProxyEnableOps{
 		portOpen: systemProxyPortOpen, waitPort: systemProxyWaitPort,
@@ -810,6 +899,51 @@ func runSystemProxyOn(stdout io.Writer, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "System proxy enabled (127.0.0.1:%d)\n", port)
 	return 0
+}
+
+func ensureGeoAutoUpdate(p paths.RuntimePaths) error {
+	for _, path := range []string{p.ConfigYAML} {
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		updated, err := config.EnableGeoAutoUpdate(data)
+		if err != nil {
+			return err
+		}
+		if updated != string(data) {
+			if err := profile.AtomicWrite(path, []byte(updated), 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	profiles, err := profile.LoadAll(p.ProfilesDir)
+	if err != nil {
+		return err
+	}
+	for _, item := range profiles {
+		if !item.Active {
+			continue
+		}
+		path := profile.ProfileConfigPath(p.ProfilesDir, item.ID)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		updated, err := config.EnableGeoAutoUpdate(data)
+		if err != nil {
+			return err
+		}
+		if updated != string(data) {
+			if err := profile.AtomicWrite(path, []byte(updated), 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func runGuard(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
@@ -1304,32 +1438,417 @@ func runSubscriptionList(stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
-func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
+type subscriptionUpdateEvent struct {
+	Stage        string `json:"stage"`
+	Message      string `json:"message"`
+	SuggestedFix string `json:"suggestedFix,omitempty"`
+	Profile      string `json:"profile,omitempty"`
+	At           string `json:"at,omitempty"`
+}
+
+func runMaintenanceStatus(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
+	p, err := paths.Default()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	unlock, lockErr := core.TryLockLifecycle(p.Config)
+	if lockErr == nil {
+		defer unlock()
+	}
+	status, err := maintenance.Load(p.MaintenanceJSON)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if status.SubscriptionInProgress {
+		attempt := parseStatusTime(status.SubscriptionLastAttempt)
+		if !attempt.IsZero() && time.Since(attempt) > 2*time.Hour {
+			status = maintenance.MarkFailure(status, "上次订阅更新未完成，已中断")
+		}
+	}
+	profiles, profileErr := profile.LoadAll(p.ProfilesDir)
+	if profileErr == nil {
+		for _, item := range profiles {
+			if !item.UpdatedAt.IsZero() && item.UpdatedAt.After(parseStatusTime(status.SubscriptionLastSuccess)) {
+				status.SubscriptionLastSuccess = item.UpdatedAt.UTC().Format(time.RFC3339)
+			}
+		}
+	}
+	// Mihomo owns geo downloads. A changed timestamp is only an observed data
+	// change, not an internal database release date or verified update result.
+	home := filepath.Dir(filepath.Dir(filepath.Dir(p.Base)))
+	previous := status.GeoObservedFiles
+	if previous == nil {
+		previous = map[string]string{}
+	}
+	observed := map[string]string{}
+	observedAt := time.Now().UTC()
+	for _, dir := range []string{filepath.Join(home, ".config", "mihomo"), p.Config} {
+		entries, readErr := os.ReadDir(dir)
+		if readErr != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !isGeoAsset(entry.Name()) {
+				continue
+			}
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				continue
+			}
+			stamp := info.ModTime().UTC().Format(time.RFC3339)
+			key := filepath.Join(dir, entry.Name())
+			observed[key] = stamp
+			if status.ObservedAt != "" && previous[key] != stamp {
+				status.GeoLastObservedChange = observedAt.Format(time.RFC3339)
+			}
+		}
+	}
+	status.GeoObservedFiles = observed
+	status.GeoFiles = len(observed)
+	status.ObservedAt = observedAt.Format(time.RFC3339)
+	if activeConfig, readErr := os.ReadFile(p.ConfigYAML); readErr == nil {
+		status.GeoAutoUpdate = config.GeoAutoUpdateEnabled(activeConfig)
+		if status.ConfigSHA256 != "" && status.ConfigSHA256 != configurationHash(activeConfig) {
+			status.ConfigApplicationState = "unknown"
+			status.ConfigApplicationMessage = "保存的配置已变化，当前内核是否应用需要重新确认。"
+		}
+	}
+	if lockErr == nil {
+		if err := maintenance.Save(p.MaintenanceJSON, status); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
+	if jsonOutput {
+		_ = json.NewEncoder(stdout).Encode(status)
+		return 0
+	}
+	if status.SubscriptionLastSuccess == "" {
+		fmt.Fprintln(stdout, "订阅：尚未成功更新")
+	} else {
+		fmt.Fprintf(stdout, "订阅：上次成功 %s\n", status.SubscriptionLastSuccess)
+	}
+	if status.GeoLastObservedChange == "" {
+		fmt.Fprintln(stdout, "地理库：未观察到本次运行期间的数据更新")
+	} else {
+		fmt.Fprintf(stdout, "地理库：观察到数据库文件变化 %s\n", status.GeoLastObservedChange)
+	}
+	return 0
+}
+
+func parseStatusTime(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+	parsed, _ := time.Parse(time.RFC3339, value)
+	return parsed
+}
+func isGeoAsset(name string) bool {
+	switch strings.ToLower(name) {
+	case "geosite.dat", "geoip.dat", "geoip.metadb", "country.mmdb", "asn.mmdb":
+		return true
+	default:
+		return false
+	}
+}
+
+func subscriptionBasePath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), ".proxycat-subscription-base.yaml")
+}
+
+func encodePreferenceStore(store preferences.Store) ([]byte, error) {
+	return json.MarshalIndent(store, "", "  ")
+}
+
+func rebuildEffectiveConfig(configPath string, previous, next preferences.Store) (map[string][]byte, error) {
+	effective, err := os.ReadFile(configPath)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	basePath := subscriptionBasePath(configPath)
+	base, err := os.ReadFile(basePath)
+	if os.IsNotExist(err) {
+		clean, rebuildErr := preferences.RebuildYAML(effective, previous, preferences.Store{})
+		if rebuildErr != nil {
+			return nil, rebuildErr
+		}
+		base = []byte(clean)
+	} else if err != nil {
+		return nil, err
+	}
+	updated, err := preferences.ApplyToYAML(base, next)
+	if err != nil {
+		return nil, err
+	}
+	return map[string][]byte{basePath: base, configPath: []byte(updated)}, nil
+}
+
+func applyPreferencesToCurrentConfigs(p paths.RuntimePaths, previous, next preferences.Store) (map[string][]byte, error) {
+	updates := map[string][]byte{}
+	for _, path := range []string{p.ConfigYAML} {
+		files, err := rebuildEffectiveConfig(path, previous, next)
+		if err != nil {
+			return nil, err
+		}
+		for file, data := range files {
+			updates[file] = data
+		}
+	}
+	profiles, err := profile.LoadAll(p.ProfilesDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range profiles {
+		if !item.Active {
+			continue
+		}
+		path := profile.ProfileConfigPath(p.ProfilesDir, item.ID)
+		files, err := rebuildEffectiveConfig(path, previous, next)
+		if err != nil {
+			return nil, err
+		}
+		for file, data := range files {
+			updates[file] = data
+		}
+	}
+	for path, content := range updates {
+		if filepath.Base(path) != "config.yaml" {
+			continue
+		}
+		if err := validateRuntimeConfig(p, content); err != nil {
+			return nil, fmt.Errorf("配置校验失败：%w", err)
+		}
+	}
+	return updates, nil
+}
+
+func activateProfileWithPreferences(p paths.RuntimePaths, profileID string) error {
+	profiles, err := profile.LoadAll(p.ProfilesDir)
+	if err != nil {
+		return err
+	}
+	found := false
+	for i := range profiles {
+		profiles[i].Active = profiles[i].ID == profileID
+		found = found || profiles[i].Active
+	}
+	if !found {
+		return fmt.Errorf("profile not found: %s", profileID)
+	}
+	configPath := profile.ProfileConfigPath(p.ProfilesDir, profileID)
+	effective, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	store, err := preferences.Load(p.PreferencesJSON)
+	if err != nil {
+		return fmt.Errorf("load website preferences: %w", err)
+	}
+	basePath := subscriptionBasePath(configPath)
+	base, err := os.ReadFile(basePath)
+	if os.IsNotExist(err) {
+		clean, rebuildErr := preferences.RebuildYAML(effective, store, preferences.Store{})
+		if rebuildErr != nil {
+			return rebuildErr
+		}
+		base = []byte(clean)
+	} else if err != nil {
+		return err
+	}
+	effectiveConfig, err := preferences.ApplyToYAML(base, store)
+	if err != nil {
+		return err
+	}
+	if err := validateRuntimeConfig(p, []byte(effectiveConfig)); err != nil {
+		return fmt.Errorf("validate profile config: %w", err)
+	}
+	index, err := profile.EncodeAll(profiles)
+	if err != nil {
+		return err
+	}
+	return profile.AtomicWriteSet(map[string][]byte{
+		configPath:                         []byte(effectiveConfig),
+		basePath:                           base,
+		p.ConfigYAML:                       []byte(effectiveConfig),
+		subscriptionBasePath(p.ConfigYAML): base,
+		filepath.Join(p.ProfilesDir, "profiles.json"): index,
+	}, 0o644)
+}
+
+func runPreferencesList(stdout, stderr io.Writer, jsonOutput bool) int {
+	p, err := paths.Default()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	store, err := preferences.Load(p.PreferencesJSON)
+	if err != nil {
+		fmt.Fprintln(stderr, "网站偏好文件无法读取")
+		return 1
+	}
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(store); err != nil {
+			return 1
+		}
+		return 0
+	}
+	for _, item := range store.Preferences {
+		fmt.Fprintf(stdout, "%s %s\n", item.Host, item.Route)
+	}
+	return 0
+}
+
+func runPreferencesSet(route, host string, stdout, stderr io.Writer, jsonOutput bool) int {
+	p, err := paths.Default()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	store, err := preferences.Load(p.PreferencesJSON)
+	if err != nil {
+		fmt.Fprintln(stderr, "网站偏好文件无法读取")
+		return 1
+	}
+	oldStore := preferences.Store{Preferences: append([]preferences.Preference(nil), store.Preferences...)}
+	normalizedHost, err := preferences.NormalizeHost(host)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if err := preferences.Upsert(&store, host, route); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	updates, applyErr := applyPreferencesToCurrentConfigs(p, oldStore, store)
+	if applyErr != nil {
+		fmt.Fprintln(stderr, applyErr)
+		return 1
+	}
+	preferenceBytes, err := encodePreferenceStore(store)
+	if err != nil {
+		fmt.Fprintln(stderr, "网站偏好编码失败")
+		return 1
+	}
+	updates[p.PreferencesJSON] = preferenceBytes
+	application, err := commitConfiguration(p, updates)
+	if err != nil {
+		fmt.Fprintf(stderr, "网站偏好保存失败：%v\n", err)
+		return 1
+	}
+	message := "网站偏好已保存。" + application.Message
+	if jsonOutput {
+		_ = json.NewEncoder(stdout).Encode(map[string]string{"host": normalizedHost, "route": route, "message": message, "applicationState": application.State})
+	} else {
+		fmt.Fprintln(stdout, message)
+	}
+	return 0
+}
+
+func runPreferencesRemove(host string, stdout, stderr io.Writer, jsonOutput bool) int {
+	p, err := paths.Default()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	store, err := preferences.Load(p.PreferencesJSON)
+	if err != nil {
+		fmt.Fprintln(stderr, "网站偏好文件无法读取")
+		return 1
+	}
+	normalizedHost, err := preferences.NormalizeHost(host)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	oldStore := preferences.Store{Preferences: append([]preferences.Preference(nil), store.Preferences...)}
+	store, err = preferences.Remove(&store, host)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	updates, applyErr := applyPreferencesToCurrentConfigs(p, oldStore, store)
+	if applyErr != nil {
+		fmt.Fprintln(stderr, applyErr)
+		return 1
+	}
+	preferenceBytes, err := encodePreferenceStore(store)
+	if err != nil {
+		fmt.Fprintln(stderr, "网站偏好编码失败")
+		return 1
+	}
+	updates[p.PreferencesJSON] = preferenceBytes
+	application, err := commitConfiguration(p, updates)
+	if err != nil {
+		fmt.Fprintf(stderr, "网站偏好保存失败：%v\n", err)
+		return 1
+	}
+	message := "已恢复订阅默认。" + application.Message
+	if jsonOutput {
+		_ = json.NewEncoder(stdout).Encode(map[string]string{"host": normalizedHost, "message": message, "applicationState": application.State})
+	} else {
+		fmt.Fprintln(stdout, message)
+	}
+	return 0
+}
+
+func emitSubscriptionEvent(stdout io.Writer, jsonOutput bool, event subscriptionUpdateEvent) {
+	if jsonOutput {
+		_ = json.NewEncoder(stdout).Encode(event)
+		return
+	}
+	fmt.Fprintln(stdout, event.Message)
+	if event.SuggestedFix != "" {
+		fmt.Fprintf(stdout, "  建议：%s\n", event.SuggestedFix)
+	}
+}
+
+func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer, jsonOutput bool) int {
 	runtimePaths, err := paths.Default()
 	if err != nil {
 		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
 		return 1
 	}
 
+	status, err := maintenance.Load(runtimePaths.MaintenanceJSON)
+	if err != nil {
+		fmt.Fprintf(stderr, "load maintenance status: %v\n", err)
+		return 1
+	}
+	status = maintenance.MarkAttempt(status, time.Now())
+	if err := maintenance.Save(runtimePaths.MaintenanceJSON, status); err != nil {
+		fmt.Fprintf(stderr, "save maintenance status: %v\n", err)
+		return 1
+	}
 	// Try profile-based update first
 	profiles, err := profile.LoadAll(runtimePaths.ProfilesDir)
 	if err != nil {
+		status = maintenance.MarkFailure(status, "无法读取订阅配置")
+		_ = maintenance.Save(runtimePaths.MaintenanceJSON, status)
 		fmt.Fprintf(stderr, "load profiles: %v\n", err)
 		return 1
 	}
 
 	if len(profiles) > 0 {
-		client := &http.Client{}
+		client := updateHTTPClient()
+		client.Timeout = 25 * time.Second
+		defer client.CloseIdleConnections()
+		failed := false
+		failureSummary := ""
 		for i, p := range profiles {
 			probe := subscription.Probe(client, p.URL)
 			if probe.Selected == nil {
-				fmt.Fprintf(stdout, "Profile %s (%s): invalid - %s\n", p.ID, p.Name, probe.Message)
-				if probe.SuggestedFix != "" {
-					fmt.Fprintf(stdout, "  建议：%s\n", probe.SuggestedFix)
+				failed = true
+				if failureSummary == "" {
+					failureSummary = probe.Message
 				}
+				emitSubscriptionEvent(stdout, jsonOutput, subscriptionUpdateEvent{Stage: "error", Profile: p.ID, Message: fmt.Sprintf("配置 %s 更新失败：%s", p.Name, probe.Message), SuggestedFix: probe.SuggestedFix})
 				continue
 			}
-			profiles[i].UpdatedAt = time.Now()
 			format := config.Format(probe.Selected.Format)
 			content := probe.SelectedContent
 			var configYAML string
@@ -1342,42 +1861,128 @@ func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 				err = fmt.Errorf("unknown format: %s", format)
 			}
 			if err != nil {
-				fmt.Fprintf(stdout, "Profile %s: generate failed: %v\n", p.ID, err)
+				failed = true
+				if failureSummary == "" {
+					failureSummary = err.Error()
+				}
+				emitSubscriptionEvent(stdout, jsonOutput, subscriptionUpdateEvent{Stage: "error", Profile: p.ID, Message: fmt.Sprintf("配置 %s 生成失败：%v", p.Name, err)})
 				continue
 			}
-			pDir, _ := profile.EnsureProfileDir(runtimePaths.ProfilesDir, p.ID)
-			if err := os.WriteFile(filepath.Join(pDir, "config.yaml"), []byte(configYAML), 0644); err != nil {
-				fmt.Fprintf(stdout, "Profile %s: write failed: %v\n", p.ID, err)
+			configYAML, err = config.EnableGeoAutoUpdate([]byte(configYAML))
+			if err != nil {
+				failed = true
+				if failureSummary == "" {
+					failureSummary = err.Error()
+				}
+				emitSubscriptionEvent(stdout, jsonOutput, subscriptionUpdateEvent{Stage: "error", Profile: p.ID, Message: fmt.Sprintf("配置 %s 地理库设置失败：%v", p.Name, err)})
 				continue
 			}
-			if _, err := profile.SaveTraffic(runtimePaths.ProfilesDir, p, probe.Traffic, time.Now()); err != nil {
+			baseConfigYAML := configYAML
+			prefs, prefErr := preferences.Load(runtimePaths.PreferencesJSON)
+			if prefErr == nil {
+				configYAML, prefErr = preferences.ApplyToYAML([]byte(baseConfigYAML), prefs)
+			}
+			if prefErr != nil {
+				failed = true
+				if failureSummary == "" {
+					failureSummary = prefErr.Error()
+				}
+				emitSubscriptionEvent(stdout, jsonOutput, subscriptionUpdateEvent{Stage: "error", Profile: p.ID, Message: fmt.Sprintf("配置 %s 的网站偏好无法安全应用：%v", p.Name, prefErr)})
+				continue
+			}
+			if err := validateRuntimeConfig(runtimePaths, []byte(configYAML)); err != nil {
+				failed = true
+				if failureSummary == "" {
+					failureSummary = err.Error()
+				}
+				emitSubscriptionEvent(stdout, jsonOutput, subscriptionUpdateEvent{Stage: "error", Profile: p.ID, Message: fmt.Sprintf("配置 %s 校验失败：%v", p.Name, err)})
+				continue
+			}
+			pDir, dirErr := profile.EnsureProfileDir(runtimePaths.ProfilesDir, p.ID)
+			if dirErr != nil {
+				failed = true
+				if failureSummary == "" {
+					failureSummary = dirErr.Error()
+				}
+				emitSubscriptionEvent(stdout, jsonOutput, subscriptionUpdateEvent{Stage: "error", Profile: p.ID, Message: fmt.Sprintf("配置 %s 目录创建失败：%v", p.Name, dirErr)})
+				continue
+			}
+			configPath := filepath.Join(pDir, "config.yaml")
+			basePath := subscriptionBasePath(configPath)
+			writeSet := map[string][]byte{basePath: []byte(baseConfigYAML), configPath: []byte(configYAML)}
+			if p.Active {
+				writeSet[subscriptionBasePath(runtimePaths.ConfigYAML)] = []byte(baseConfigYAML)
+				writeSet[runtimePaths.ConfigYAML] = []byte(configYAML)
+			}
+			application, writeErr := commitConfiguration(runtimePaths, writeSet)
+			if p.Active && application.State != "" {
+				status.ConfigApplicationState, status.ConfigApplicationMessage = application.State, application.Message
+				if saved, readErr := os.ReadFile(runtimePaths.ConfigYAML); readErr == nil {
+					status.ConfigSHA256 = configurationHash(saved)
+				}
+			}
+			if writeErr != nil {
+				failed = true
+				if failureSummary == "" {
+					failureSummary = writeErr.Error()
+				}
+				emitSubscriptionEvent(stdout, jsonOutput, subscriptionUpdateEvent{Stage: "error", Profile: p.ID, Message: fmt.Sprintf("配置 %s 写入失败：%v", p.Name, writeErr)})
+				continue
+			}
+			updatedAt := time.Now().UTC()
+			profiles[i].UpdatedAt = updatedAt
+			if _, err := profile.SaveTraffic(runtimePaths.ProfilesDir, profiles[i], probe.Traffic, updatedAt); err != nil {
 				fmt.Fprintln(stderr, "流量信息未能缓存，可稍后刷新")
 			}
-			fmt.Fprintf(stdout, "Profile %s (%s): updated\n", p.ID, p.Name)
+			emitSubscriptionEvent(stdout, jsonOutput, subscriptionUpdateEvent{Stage: "success", Profile: p.ID, At: updatedAt.Format(time.RFC3339), Message: fmt.Sprintf("配置 %s 已更新。%s", p.Name, application.Message)})
 		}
 		if err := profile.SaveAll(runtimePaths.ProfilesDir, profiles); err != nil {
+			status = maintenance.MarkFailure(status, "无法保存订阅更新时间")
+			_ = maintenance.Save(runtimePaths.MaintenanceJSON, status)
 			fmt.Fprintf(stderr, "save profiles: %v\n", err)
 			return 1
 		}
+		if failed {
+			status = maintenance.MarkFailure(status, failureSummary)
+			_ = maintenance.Save(runtimePaths.MaintenanceJSON, status)
+			// The app reads stderr when a helper command fails. Keep the reason
+			// visible there as well as in profile events and maintenance status.
+			fmt.Fprintln(stderr, failureSummary)
+			return 1
+		}
+		status = maintenance.MarkSuccess(status, time.Now())
+		_ = maintenance.Save(runtimePaths.MaintenanceJSON, status)
 		return 0
 	}
 
 	// Legacy fallback: subscriptions.json
 	records, err := subscription.Load(runtimePaths.SubscriptionsJSON)
 	if err != nil {
+		status = maintenance.MarkFailure(status, "无法读取订阅信息")
+		_ = maintenance.Save(runtimePaths.MaintenanceJSON, status)
 		fmt.Fprintf(stderr, "load subscriptions: %v\n", err)
 		return 1
 	}
 
 	if len(records) == 0 {
+		status = maintenance.MarkFailure(status, "没有可更新的订阅")
+		_ = maintenance.Save(runtimePaths.MaintenanceJSON, status)
 		fmt.Fprintln(stderr, "No subscriptions to update")
 		return 1
 	}
 
-	client := &http.Client{}
+	client := updateHTTPClient()
+	client.Timeout = 25 * time.Second
+	defer client.CloseIdleConnections()
+	legacyFailed := false
+	legacyFailure := ""
 	for i, r := range records {
 		probe := subscription.Probe(client, r.URL)
 		if probe.Selected == nil {
+			legacyFailed = true
+			if legacyFailure == "" {
+				legacyFailure = probe.Message
+			}
 			fmt.Fprintf(stdout, "Subscription %d: invalid - %s\n", i+1, probe.Message)
 			if probe.SuggestedFix != "" {
 				fmt.Fprintf(stdout, "  建议：%s\n", probe.SuggestedFix)
@@ -1391,15 +1996,15 @@ func runSubscriptionUpdate(stdout io.Writer, stderr io.Writer) int {
 		} else {
 			fmt.Fprintf(stdout, "  Valid: %d nodes (requires config generation)\n", probe.Selected.NodeCount)
 		}
-		records[i].LastUpdate = time.Now()
 	}
-
-	if err := subscription.Save(runtimePaths.SubscriptionsJSON, records); err != nil {
-		fmt.Fprintf(stderr, "save subscriptions: %v\n", err)
-		return 1
+	message := "旧版订阅仅完成连通性检查，尚未生成或应用配置；请在 ProxyCat 中重新导入订阅"
+	if legacyFailed {
+		message += "。最近一次检查错误：" + legacyFailure
 	}
-
-	return 0
+	status = maintenance.MarkFailure(status, message)
+	_ = maintenance.Save(runtimePaths.MaintenanceJSON, status)
+	emitSubscriptionEvent(stdout, jsonOutput, subscriptionUpdateEvent{Stage: "error", Message: message})
+	return 1
 }
 
 func runConfigGenerate(stdout io.Writer, stderr io.Writer) int {
@@ -1424,7 +2029,8 @@ func runConfigGenerate(stdout io.Writer, stderr io.Writer) int {
 	r := records[0]
 	fmt.Fprintf(stdout, "Generating config from subscription: %s\n", redact.URL(r.URL))
 
-	client := &http.Client{}
+	client := updateHTTPClient()
+	defer client.CloseIdleConnections()
 	probe := subscription.Probe(client, r.URL)
 	if probe.Selected == nil {
 		fmt.Fprintf(stderr, "%s\n", probe.Message)
@@ -1458,13 +2064,35 @@ func runConfigGenerate(stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
+	if err == nil {
+		configYAML, err = config.EnableGeoAutoUpdate([]byte(configYAML))
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "prepare config: %v\n", err)
+		return 1
+	}
+	baseConfig := configYAML
+	prefs, err := preferences.Load(runtimePaths.PreferencesJSON)
+	if err != nil {
+		fmt.Fprintf(stderr, "load website preferences: %v\n", err)
+		return 1
+	}
+	configYAML, err = preferences.ApplyToYAML([]byte(baseConfig), prefs)
+	if err != nil {
+		fmt.Fprintf(stderr, "apply website preferences: %v\n", err)
+		return 1
+	}
 	if err := os.MkdirAll(filepath.Dir(runtimePaths.ConfigYAML), 0o755); err != nil {
 		fmt.Fprintf(stderr, "create config directory: %v\n", err)
 		return 1
 	}
 
 	// Write config file
-	if err := os.WriteFile(runtimePaths.ConfigYAML, []byte(configYAML), 0644); err != nil {
+	if err := validateRuntimeConfig(runtimePaths, []byte(configYAML)); err != nil {
+		fmt.Fprintf(stderr, "validate config: %v\n", err)
+		return 1
+	}
+	if err := profile.AtomicWriteSet(map[string][]byte{runtimePaths.ConfigYAML: []byte(configYAML), subscriptionBasePath(runtimePaths.ConfigYAML): []byte(baseConfig)}, 0644); err != nil {
 		fmt.Fprintf(stderr, "write config: %v\n", err)
 		return 1
 	}
@@ -1500,7 +2128,8 @@ func runConfigGenerateForProfile(profileID string, stdout io.Writer, stderr io.W
 
 	fmt.Fprintf(stdout, "Generating config from subscription: %s\n", redact.URL(target.URL))
 
-	client := &http.Client{}
+	client := updateHTTPClient()
+	defer client.CloseIdleConnections()
 	probe := subscription.Probe(client, target.URL)
 	if probe.Selected == nil {
 		fmt.Fprintf(stderr, "%s\n", probe.Message)
@@ -1537,9 +2166,41 @@ func runConfigGenerateForProfile(profileID string, stdout io.Writer, stderr io.W
 		fmt.Fprintf(stderr, "create profile dir: %v\n", err)
 		return 1
 	}
-	if err := os.WriteFile(profileConfigPath, []byte(configYAML), 0644); err != nil {
+	configYAML, err = config.EnableGeoAutoUpdate([]byte(configYAML))
+	if err != nil {
+		fmt.Fprintf(stderr, "prepare config: %v\n", err)
+		return 1
+	}
+	baseConfig := configYAML
+	prefs, err := preferences.Load(runtimePaths.PreferencesJSON)
+	if err != nil {
+		fmt.Fprintf(stderr, "load website preferences: %v\n", err)
+		return 1
+	}
+	effectiveConfig, err := preferences.ApplyToYAML([]byte(baseConfig), prefs)
+	if err != nil {
+		fmt.Fprintf(stderr, "apply website preferences: %v\n", err)
+		return 1
+	}
+	if err := validateRuntimeConfig(runtimePaths, []byte(effectiveConfig)); err != nil {
+		fmt.Fprintf(stderr, "validate config: %v\n", err)
+		return 1
+	}
+	if err := profile.AtomicWriteSet(map[string][]byte{profileConfigPath: []byte(effectiveConfig), subscriptionBasePath(profileConfigPath): []byte(baseConfig)}, 0644); err != nil {
 		fmt.Fprintf(stderr, "write profile config: %v\n", err)
 		return 1
+	}
+	for i := range profiles {
+		if profiles[i].ID == profileID {
+			profiles[i].UpdatedAt = time.Now().UTC()
+		}
+	}
+	if err := profile.SaveAll(runtimePaths.ProfilesDir, profiles); err != nil {
+		fmt.Fprintf(stderr, "save profile update time: %v\n", err)
+		return 1
+	}
+	if status, err := maintenance.Load(runtimePaths.MaintenanceJSON); err == nil {
+		_ = maintenance.Save(runtimePaths.MaintenanceJSON, maintenance.MarkSuccess(status, time.Now()))
 	}
 	if _, err := profile.SaveTraffic(runtimePaths.ProfilesDir, *target, probe.Traffic, time.Now()); err != nil {
 		fmt.Fprintln(stderr, "流量信息未能缓存，可稍后刷新")
@@ -1629,7 +2290,7 @@ func runProfileActivate(profileID string, stdout io.Writer, stderr io.Writer) in
 		fmt.Fprintf(stderr, "resolve paths: %v\n", err)
 		return 1
 	}
-	if err := profile.Activate(runtimePaths.ProfilesDir, profileID, runtimePaths.ConfigYAML); err != nil {
+	if err := activateProfileWithPreferences(runtimePaths, profileID); err != nil {
 		fmt.Fprintf(stderr, "activate profile: %v\n", err)
 		return 1
 	}

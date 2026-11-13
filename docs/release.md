@@ -1,10 +1,10 @@
 # Release Process
 
-ProxyCat ships a DMG for drag-to-Applications installation and in-app updates. Developer ID signing and notarization are not configured yet. Starting with 0.12.1, the updater prefers a version-matched DMG and checksum, with fallback to older installer ZIP releases.
+ProxyCat ships a DMG with a native offline installer, a manual drag-to-Applications option and support for in-app updates. Developer ID signing and notarization are not configured yet. Starting with 0.12.1, the updater prefers a version-matched DMG and checksum, with fallback to older installer ZIP releases.
 
 ## Build and package
 
-Prerequisites: macOS, Go 1.21+, Xcode 13+, Python 3.10+ and GitHub push access. The DMG tools are pinned in `scripts/dmg/requirements.txt` and installed into an isolated environment under the ignored build directory. The first DMG build needs network access to download them.
+Prerequisites: macOS, Go 1.25+, Xcode 13+, Python 3.10+ and GitHub push access. The DMG tools are pinned in `scripts/dmg/requirements.txt` and installed into an isolated environment under the ignored build directory. The first DMG build needs network access to download them.
 
 1. Follow the [versioning policy](versioning.md): run `python3 scripts/version.py bump patch` for fixes, `bump minor` for new features, or `bump major` for the first stable version or subsequent breaking changes. The script updates the single version source in `Info.plist` and increments the internal build number. Do not add version overrides to the Xcode project.
    Add user-facing Markdown notes to `docs/releases/vX.Y.Z.md`, using headings such as `新功能`, `修复` and `改进`. The same file is bundled for offline changelog viewing and published as the GitHub Release body. Check for missing version notes before packaging.
@@ -15,6 +15,7 @@ Prerequisites: macOS, Go 1.21+, Xcode 13+, Python 3.10+ and GitHub push access. 
    bash scripts/test-shutdown.sh
    bash scripts/test-campus-network.sh
    bash scripts/test-connection-recovery.sh
+   bash scripts/test-installer.sh
    bash scripts/package-unsigned_test.sh
    python3 scripts/test-update-manifest.py
    ```
@@ -38,6 +39,8 @@ Prerequisites: macOS, Go 1.21+, Xcode 13+, Python 3.10+ and GitHub push access. 
 
 If a release job stops while uploading, run the Release workflow manually from the main branch with the existing tag. It resumes a draft by its release ID, replaces its incomplete assets, verifies all uploaded checksums and only then publishes it. It refuses to overwrite an already published release.
 
+If GitHub-hosted jobs cannot start because of an account billing lock, the same regression, universal build and mounted-DMG checks may run locally. Merge the tested source first and tag that exact commit; create a draft release, upload the verified DMG, legacy installer ZIP, both checksum files and `update.json`, compare every uploaded asset's size and SHA-256 digest, and only then publish. Record that the verification ran locally rather than claiming Actions passed. Do not change the running proxy or TUN to perform release checks.
+
 To add a DMG to an existing release without rebuilding or changing its ZIPs:
 
 ```bash
@@ -45,13 +48,13 @@ bash scripts/package-dmg.sh /path/to/ProxyCat.app
 bash scripts/test-dmg.sh dist/ProxyCat-X.Y.Z.dmg
 ```
 
-Use the app from that release's ZIP. DMG packaging signs a staging copy and leaves the original app unchanged. It uses `dmgbuild` to write Finder metadata without scripting Finder, so it also runs on macOS CI. To regenerate the included background image, run `swift scripts/dmg/background.swift`.
+Use the app from that release's ZIP. DMG packaging signs a staging copy and leaves the original app unchanged. It uses `dmgbuild` to write Finder metadata without scripting Finder, so it also runs on macOS CI. The packager verifies signatures on the mounted image before moving it to the output directory; extraction alone can lose invalid Finder metadata and miss a broken image. An unmodified `makehybrid -hfs` image is unsuitable: it adds synthetic FinderInfo to signed bundle contents. Any manually prepared fallback must remove that metadata and pass the same checks on the final mounted image. To regenerate the included background image, run `swift scripts/dmg/background.swift`.
 
 ## User installation
 
-1. Download the DMG, open it, and drag ProxyCat to Applications.
-2. Quit an older running version before replacing it.
-3. Open ProxyCat from Applications; its cat icon appears in the menu bar.
+1. Download and open the DMG. The primary row keeps the familiar **ProxyCat → Applications** drag-and-drop installation.
+2. When updating an existing app, the optional **安装 ProxyCat** below can quit and replace it automatically. Review the installed and packaged versions, then confirm. The installer requests a normal quit, waits for network cleanup and replaces the app; failure to quit cancels installation. It never force-kills ProxyCat.
+3. The installer opens the installed app; its cat icon appears in the menu bar. Existing subscriptions and settings are preserved.
 4. If macOS blocks the first launch, use **System Settings → Privacy & Security → Open Anyway**.
 
 The DMG app is ad-hoc signed for code integrity. Ad-hoc signatures can be verified on other Macs, but do not establish Developer ID trust or replace Apple notarization. A DMG does not bypass Gatekeeper.

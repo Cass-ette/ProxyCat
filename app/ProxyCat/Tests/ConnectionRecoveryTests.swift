@@ -59,6 +59,10 @@ private final class Fixture {
                 cat "$fixture_dir/connections.json"
                 ;;
             'website-check '*)
+                if [ -f "$fixture_dir/hold-website" ]; then
+                    touch "$fixture_dir/website-held"
+                    while [ -f "$fixture_dir/hold-website" ]; do sleep 0.02; done
+                fi
                 if [ -f "$fixture_dir/website-result.json" ]; then cat "$fixture_dir/website-result.json"; else echo 'invalid website' >&2; exit 2; fi
                 ;;
             'core status')
@@ -67,18 +71,25 @@ private final class Fixture {
                 printf '{"running":%s,"pid":42}\n' "$active"
                 ;;
             'diagnose --json')
+                if [ -f "$fixture_dir/fail-diagnose" ]; then echo 'diagnosis unavailable' >&2; exit 8; fi
                 if [ -f "$fixture_dir/hold-diagnose" ]; then
                     touch "$fixture_dir/diagnose-held"
                     while [ -f "$fixture_dir/hold-diagnose" ]; do sleep 0.02; done
                 fi
+                if [ -f "$fixture_dir/diagnose-result.json" ]; then cat "$fixture_dir/diagnose-result.json"; exit 0; fi
                 echo '{"app":"ProxyCat","milestone":"test","checks":[{"name":"listener","status":"pass","message":"ready"}]}'
                 ;;
             'core start')
+                if [ -f "$fixture_dir/hold-start" ]; then
+                    touch "$fixture_dir/start-held"
+                    while [ -f "$fixture_dir/hold-start" ]; do sleep 0.02; done
+                fi
                 if [ -f "$fixture_dir/fail-start" ]; then
                     echo 'saved config failed to start' >&2
                     exit 7
                 fi
                 touch "$fixture_dir/core-active"
+                if [ -f "$fixture_dir/diagnose-after-start.json" ]; then cp "$fixture_dir/diagnose-after-start.json" "$fixture_dir/diagnose-result.json"; fi
                 ;;
             'core stop') rm -f "$fixture_dir/core-active" "$fixture_dir/tun-active" ;;
             'tun on')
@@ -100,6 +111,7 @@ private final class Fixture {
             'system-proxy on') touch "$fixture_dir/proxy-active" ;;
             'system-proxy off') rm -f "$fixture_dir/proxy-active" ;;
             'mode status')
+                if [ -f "$fixture_dir/fail-mode-status" ]; then echo 'controller unavailable' >&2; exit 8; fi
                 if [ -f "$fixture_dir/hold-mode" ]; then
                     touch "$fixture_dir/mode-held"
                     while [ -f "$fixture_dir/hold-mode" ]; do sleep 0.02; done
@@ -159,6 +171,41 @@ private final class Fixture {
                 if [ -f "$fixture_dir/fail-profiles" ]; then exit 8; fi
                 if [ -f "$fixture_dir/profiles.json" ]; then cat "$fixture_dir/profiles.json"; exit 0; fi
                 echo '[{"id":"saved","name":"Saved","url":"https://example.invalid/subscription","createdAt":"","updatedAt":"","active":true}]'
+                ;;
+            'maintenance status')
+                if [ -f "$fixture_dir/maintenance.json" ]; then
+                    cat "$fixture_dir/maintenance.json"
+                elif [ -f "$fixture_dir/stale-maintenance" ]; then
+                    echo '{"subscriptionLastSuccess":"2026-01-01T00:00:00Z"}'
+                elif [ -f "$fixture_dir/subscription-updated" ]; then
+                    echo '{"subscriptionLastSuccess":"2027-01-15T08:00:00Z"}'
+                else
+                    echo '{"subscriptionLastAttempt":"2027-01-15T08:00:00Z"}'
+                fi
+                ;;
+            'preferences list')
+                if [ -f "$fixture_dir/preferences.json" ]; then cat "$fixture_dir/preferences.json"; else echo '{"preferences":[]}'; fi
+                ;;
+            'preferences set'|'preferences remove')
+                if [ -f "$fixture_dir/hold-preference" ]; then
+                    touch "$fixture_dir/preference-held"
+                    while [ -f "$fixture_dir/hold-preference" ]; do sleep 0.02; done
+                fi
+                if [ -f "$fixture_dir/fail-preference" ]; then echo 'application failed; restored previous configuration' >&2; exit 7; fi
+                cat "$fixture_dir/preference-result.json"
+                ;;
+            'subscription update')
+                if [ -f "$fixture_dir/hold-subscription" ]; then
+                    touch "$fixture_dir/subscription-held"
+                    while [ -f "$fixture_dir/hold-subscription" ]; do sleep 0.02; done
+                fi
+                if [ -f "$fixture_dir/subscription-result-maintenance.json" ]; then
+                    cp "$fixture_dir/subscription-result-maintenance.json" "$fixture_dir/maintenance.json"
+                fi
+                if [ -f "$fixture_dir/fail-subscription" ]; then echo 'subscription HTTP 503; previous configuration retained' >&2; exit 7; fi
+                touch "$fixture_dir/subscription-updated"
+                rm -f "$fixture_dir/stale-maintenance"
+                echo '{"stage":"done","message":"订阅更新完成"}'
                 ;;
             'profile traffic')
                 if [ -f "$fixture_dir/fail-traffic" ]; then echo 'temporary metadata failure' >&2; exit 8; fi
@@ -254,6 +301,18 @@ struct ConnectionRecoveryTests {
         try await updateFailuresRemainReviewable()
         try await automaticUpdatesRequireAnActiveConnection()
         try await automaticUpdatesPreserveReviewAndSurviveRelaunch()
+        try await backgroundSubscriptionUpdatesWaitForConnection()
+        try await backgroundSubscriptionRespectsDailyBoundaryAndRelaunch()
+        try await backgroundSubscriptionRetriesFailuresAfterThirtyMinutes()
+        try await backgroundSubscriptionDoesNotBlockOrOverlap()
+        try await websitePreferencesReloadFromStorage()
+        try websitePreferenceEvidenceRequiresTheSavedRule()
+        try await websitePreferenceAppliesAndVerifiesTheRequest()
+        try await websitePreferenceDoesNotCertifyUnknownRoutesOrFailures()
+        try await websitePreferenceDefersTUNAndNonRuleMode()
+        try await websitePreferenceRemovalRechecksSubscriptionRoute()
+        try await websitePreferenceVerificationRejectsChangedContext()
+        try await websitePreferenceSerializesLifecycleControls()
         try await automaticUpdateSuccessIsThrottled()
         try await automaticUpdateFailuresAreSilentAndRetryable()
         try await automaticUpdateChecksDoNotOverlap()
@@ -265,10 +324,21 @@ struct ConnectionRecoveryTests {
         try await tunFollowsConfirmedStateAndCampusPolicy()
         try await tunFailureDoesNotClaimConnection()
         try await completedTUNSwitchDoesNotWaitForNodeRefresh()
+        try await unavailableCoreDiagnosisSurvivesPolling()
+        try await failedDiagnosisKeepsLastReport()
+        try await pendingDiagnosisKeepsLastReport()
+        try await diagnosisCanBeCleared()
         try await networkChangesInvalidatePreviousDiagnosis()
         try await lateDiagnosisCannotEraseSwitchFailure()
         try await observedChangesInvalidateDiagnosis()
         try await unreadableControllerInvalidatesDiagnosis()
+        try diagnosticModelsDoNotOverstateOldOrIncompleteResults()
+        try await diagnosticRecoveryAlwaysVerifiesTheListener()
+        try await diagnosticRecoveryPreservesFailures()
+        try await diagnosticRecoveryGuardsTUNAndCampusPolicy()
+        try await diagnosticRecoveryDoesNotOverlapSwitches()
+        try await diagnosticProxyEnableIsExplicitAndRechecked()
+        try await diagnosticResultsCannotEraseANewerError()
         try await tunHelperRemovalRequiresInactiveTunnel()
         try websiteCopyDoesNotInventFacts()
         try await websiteRecoveryMatchesEvidence()
@@ -288,7 +358,7 @@ struct ConnectionRecoveryTests {
         try await tunProgressArrivesBeforeTheCommandFinishes()
         try await menuBarTrafficWarningsPreserveConnectionColors()
         try await nodeNamesAreFormattedOnlyForDisplay()
-        print("Passed 51 connection, website, node, mode, TUN, menu bar, update and subscription traffic regression tests")
+        print("Passed 74 connection, diagnostic, website, node, mode, TUN, menu bar, update and subscription traffic regression tests")
     }
 
     static func trafficPresentationKeepsUnknownAndExhaustedStatesHonest() throws {
@@ -891,12 +961,131 @@ struct ConnectionRecoveryTests {
         try expect(fixture.viewModel.availableUpdateVersion == "0.13.0" && fixture.viewModel.updateReleaseNotes.contains("更新日志"),
                    "Connecting the system proxy must discover a reviewable release")
         try expect(fixture.viewModel.lastError == "Unrelated connection error" && fixture.viewModel.showingCurrentReleaseNotes,
-                   "Background discovery must preserve unrelated errors and the current changelog selection")
+                   "Background discovery must preserve unrelated errors and the current changelog selection; error=\(String(describing: fixture.viewModel.lastError)), currentNotes=\(fixture.viewModel.showingCurrentReleaseNotes)")
         let reopened = StatusViewModel(helper: fixture.helper, defaults: fixture.defaults, wifiSSIDProvider: { nil }, currentVersion: "0.12.4")
         try expect(reopened.availableUpdateVersion == "0.13.0" && reopened.updateReleaseURL != nil && reopened.updateReleaseNotes.contains("更新日志"),
                    "Relaunch must retain a discovered version and its notes during the daily cooldown")
         await fixture.viewModel.refreshStatus()
         try expect(fixture.updateCheckCount == 1, "A pending update must not be repeatedly checked")
+    }
+
+    @MainActor
+    static func backgroundSubscriptionUpdatesWaitForConnection() async throws {
+        let fixture = try Fixture()
+        try fixture.set("stale-maintenance")
+        await fixture.viewModel.refreshStatus()
+        try expect(!fixture.commands.contains("subscription update"), "Do not update subscriptions while the system proxy is off")
+
+        try fixture.set("proxy-active")
+        await fixture.viewModel.refreshStatus()
+        for _ in 0..<300 {
+            if fixture.commands.contains("subscription update") && !fixture.viewModel.isUpdatingSubscription { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try expect(fixture.commands.filter { $0 == "subscription update" }.count == 1,
+                   "An overdue subscription should update once after a confirmed proxy connection")
+        try expect(fixture.viewModel.maintenanceStatus?.subscriptionLastSuccess == "2027-01-15T08:00:00Z",
+                   "The app should refresh the success timestamp after its background update; status=\(String(describing: fixture.viewModel.maintenanceStatus))")
+    }
+
+    @MainActor
+    private static func writeMaintenance(_ fixture: Fixture, attempted: Date, succeeded: Date, error: String? = nil, result: Bool = false) throws {
+        let iso = ISO8601DateFormatter()
+        var record: [String: String] = ["subscriptionLastAttempt": iso.string(from: attempted), "subscriptionLastSuccess": iso.string(from: succeeded)]
+        if let error { record["subscriptionLastError"] = error }
+        try JSONSerialization.data(withJSONObject: record).write(to: fixture.directory.appendingPathComponent(result ? "subscription-result-maintenance.json" : "maintenance.json"))
+    }
+
+    @MainActor
+    private static func waitForSubscription(_ fixture: Fixture, count: Int) async throws {
+        for _ in 0..<300 {
+            if fixture.commands.filter({ $0 == "subscription update" }).count == count && !fixture.viewModel.isUpdatingSubscription { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        throw TestFailure(description: "Subscription update did not complete exactly \(count) times")
+    }
+
+    @MainActor
+    static func backgroundSubscriptionRespectsDailyBoundaryAndRelaunch() async throws {
+        let fixture = try Fixture()
+        let lastSuccess = fixture.now
+        try writeMaintenance(fixture, attempted: lastSuccess, succeeded: lastSuccess)
+        try fixture.set("proxy-active")
+        await fixture.viewModel.refreshStatus()
+        fixture.now.addTimeInterval(24 * 60 * 60 - 1)
+        await fixture.viewModel.refreshStatus()
+        try expect(!fixture.commands.contains("subscription update"), "A successful subscription must not refresh before 24 hours")
+        fixture.now.addTimeInterval(1)
+        try writeMaintenance(fixture, attempted: fixture.now, succeeded: fixture.now, result: true)
+        await fixture.viewModel.refreshStatus()
+        try await waitForSubscription(fixture, count: 1)
+        try expect(fixture.viewModel.maintenanceStatus?.subscriptionLastSuccess == ISO8601DateFormatter().string(from: fixture.now), "Background completion must publish the new success time")
+        let reopened = StatusViewModel(helper: fixture.helper, defaults: fixture.defaults, wifiSSIDProvider: { nil }, currentVersion: "0.12.4", dateProvider: { fixture.now })
+        await reopened.refreshStatus()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        try expect(fixture.commands.filter { $0 == "subscription update" }.count == 1, "Reopening must honor persisted subscription cooldown")
+    }
+
+    @MainActor
+    static func backgroundSubscriptionRetriesFailuresAfterThirtyMinutes() async throws {
+        let fixture = try Fixture()
+        let previousSuccess = fixture.now.addingTimeInterval(-2 * 24 * 60 * 60)
+        try writeMaintenance(fixture, attempted: fixture.now, succeeded: previousSuccess, error: "HTTP 503")
+        try fixture.set("proxy-active")
+        try fixture.set("fail-subscription")
+        fixture.now.addTimeInterval(30 * 60 - 1)
+        await fixture.viewModel.refreshStatus()
+        try expect(!fixture.commands.contains("subscription update"), "A failed subscription must wait 30 minutes before retrying")
+        fixture.now.addTimeInterval(1)
+        try writeMaintenance(fixture, attempted: fixture.now, succeeded: previousSuccess, error: "HTTP 503", result: true)
+        await fixture.viewModel.refreshStatus()
+        try await waitForSubscription(fixture, count: 1)
+        try expect(fixture.viewModel.maintenanceStatus?.subscriptionLastSuccess == ISO8601DateFormatter().string(from: previousSuccess) && fixture.viewModel.maintenanceStatus?.subscriptionLastError == "HTTP 503", "Failure must preserve the last successful time and show its reason")
+        try expect(fixture.viewModel.lastError?.contains("HTTP 503") == true, "A background failure must remain visible")
+        fixture.now.addTimeInterval(30 * 60 - 1)
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.commands.filter { $0 == "subscription update" }.count == 1, "A failed retry must begin a new cooldown")
+        fixture.now.addTimeInterval(1)
+        try fixture.remove("fail-subscription")
+        try writeMaintenance(fixture, attempted: fixture.now, succeeded: fixture.now, result: true)
+        await fixture.viewModel.refreshStatus()
+        try await waitForSubscription(fixture, count: 2)
+        try expect(fixture.viewModel.maintenanceStatus?.subscriptionLastError == nil && fixture.viewModel.maintenanceStatus?.subscriptionLastSuccess == ISO8601DateFormatter().string(from: fixture.now), "A successful retry must clear the maintenance error and advance success time")
+    }
+
+    @MainActor
+    static func backgroundSubscriptionDoesNotBlockOrOverlap() async throws {
+        let fixture = try Fixture()
+        try fixture.set("proxy-active")
+        try fixture.set("stale-maintenance")
+        try fixture.set("hold-subscription")
+        defer { try? fixture.remove("hold-subscription") }
+        await fixture.viewModel.refreshStatus()
+        for _ in 0..<300 {
+            if fixture.has("subscription-held") { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try expect(fixture.has("subscription-held") && fixture.viewModel.isUpdatingSubscription, "The test must hold a real helper request in flight")
+        await fixture.viewModel.refreshStatus()
+        await fixture.viewModel.updateSubscription()
+        try expect(fixture.commands.filter { $0 == "subscription update" }.count == 1 && fixture.viewModel.coreRunning && fixture.viewModel.systemProxyEnabled, "A held background update must allow refresh and reject duplicate updates")
+        try expect(!fixture.commands.contains { $0 == "tun off" || $0 == "core restart" || $0 == "system-proxy off" }, "A background request must not disconnect the active capture")
+        try fixture.remove("hold-subscription")
+        try await waitForSubscription(fixture, count: 1)
+    }
+
+    @MainActor
+    static func websitePreferencesReloadFromStorage() async throws {
+        let fixture = try Fixture()
+        try Data(#"{"preferences":[{"host":"example.com","route":"direct","createdAt":"2026-11-13T00:00:00Z"}]}"#.utf8).write(to: fixture.directory.appendingPathComponent("preferences.json"))
+        await fixture.viewModel.loadWebsitePreferences()
+        try expect(fixture.viewModel.websitePreference(for: "example.com")?.route == "direct", "A stored preference must load into the visible model")
+        let reopened = StatusViewModel(helper: fixture.helper, defaults: fixture.defaults, wifiSSIDProvider: { nil }, currentVersion: "0.12.4")
+        await reopened.loadWebsitePreferences()
+        try expect(reopened.websitePreference(for: "https://example.com/path")?.route == "direct", "A fresh model must load the stored preference after reopening")
+        try Data(#"{"preferences":[]}"#.utf8).write(to: fixture.directory.appendingPathComponent("preferences.json"))
+        await reopened.loadWebsitePreferences()
+        try expect(reopened.websitePreference(for: "example.com") == nil, "Restoring defaults must remove the visible preference badge on reload")
     }
 
     @MainActor
@@ -1067,6 +1256,78 @@ struct ConnectionRecoveryTests {
     }
 
     @MainActor
+    static func unavailableCoreDiagnosisSurvivesPolling() async throws {
+        let fixture = try Fixture(coreRunning: false)
+        try fixture.set("fail-mode-status")
+        try fixture.set("fail-groups")
+        await fixture.viewModel.refreshStatus()
+        try writeDiagnosis(diagnosticReport(), to: fixture)
+        await fixture.viewModel.runDiagnose()
+        let diagnosedAt = fixture.viewModel.diagnoseReport?.observedAt
+        for _ in 0..<3 { await fixture.viewModel.refreshStatus() }
+        try expect(fixture.viewModel.diagnoseReport?.observedAt == diagnosedAt && fixture.viewModel.diagnoseReport != nil,
+                   "A stopped core and repeated controller failures must not make its diagnostic report disappear")
+        try expect(!fixture.viewModel.diagnosisNeedsRefresh && fixture.viewModel.diagnosticActions == [.recoverCore],
+                   "An unchanged unavailable core must keep its current diagnostic recovery button usable")
+        try expect(!fixture.commands.contains("core start") && !fixture.commands.contains("system-proxy on"),
+                   "Preserving diagnosis during polling must not silently repair or enable a proxy")
+    }
+
+    @MainActor
+    static func failedDiagnosisKeepsLastReport() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try writeDiagnosis(diagnosticReport(), to: fixture)
+        await fixture.viewModel.runDiagnose()
+        let previous = fixture.viewModel.diagnoseReport?.observedAt
+        try fixture.set("fail-diagnose")
+        await fixture.viewModel.runDiagnose()
+        try expect(fixture.viewModel.diagnoseReport?.observedAt == previous && fixture.viewModel.diagnoseReport != nil,
+                   "An unsuccessful recheck must keep the previous timestamped report readable")
+        try expect(fixture.viewModel.diagnosisNeedsRefresh && fixture.viewModel.diagnosticActions.isEmpty && fixture.viewModel.lastError?.contains("诊断未完成") == true,
+                   "A failed recheck must mark the historical result stale and suppress its repair actions")
+    }
+
+    @MainActor
+    static func pendingDiagnosisKeepsLastReport() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try writeDiagnosis(diagnosticReport(), to: fixture)
+        await fixture.viewModel.runDiagnose()
+        try fixture.set("hold-diagnose")
+        let recheck = Task { await fixture.viewModel.runDiagnose() }
+        for _ in 0..<300 {
+            if fixture.has("diagnose-held") { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let previousRemainsVisible = fixture.viewModel.diagnoseReport != nil && fixture.viewModel.isDiagnosing
+        let recoveryBlocked = !fixture.viewModel.canPerformDiagnosticAction(.recoverCore)
+        fixture.viewModel.clearDiagnosis()
+        let pendingClearBlocked = fixture.viewModel.diagnoseReport != nil
+        try fixture.remove("hold-diagnose")
+        await recheck.value
+        try expect(previousRemainsVisible && recoveryBlocked && pendingClearBlocked,
+                   "A recheck must keep the last report visible and serialize clearing and recovery")
+    }
+
+    @MainActor
+    static func diagnosisCanBeCleared() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try writeDiagnosis(diagnosticReport(), to: fixture)
+        await fixture.viewModel.runDiagnose()
+        try fixture.set("fail-groups")
+        await fixture.viewModel.refreshStatus()
+        fixture.viewModel.clearDiagnosis()
+        await fixture.viewModel.refreshStatus()
+        try expect(fixture.viewModel.diagnoseReport == nil && !fixture.viewModel.diagnosisNeedsRefresh && fixture.viewModel.diagnosticActions.isEmpty,
+                   "Only an explicit clear should remove the report; later polling must not resurrect it")
+        await fixture.viewModel.runDiagnose()
+        try expect(fixture.viewModel.diagnoseReport != nil && !fixture.viewModel.diagnosisNeedsRefresh,
+                   "The user can create a fresh report after clearing history")
+    }
+
+    @MainActor
     static func networkChangesInvalidatePreviousDiagnosis() async throws {
         let fixture = try Fixture()
         await fixture.viewModel.refreshStatus()
@@ -1074,15 +1335,15 @@ struct ConnectionRecoveryTests {
         try expect(fixture.viewModel.diagnoseReport != nil, "A fresh diagnosis must be visible")
         try fixture.set("fail-tun")
         await fixture.viewModel.setTUNEnabled(true)
-        try expect(fixture.viewModel.diagnoseReport == nil && fixture.viewModel.diagnosisNeedsRefresh,
-                   "Even a failed switch must retire the old all-pass result")
+        try expect(fixture.viewModel.diagnoseReport != nil && fixture.viewModel.diagnosisNeedsRefresh && fixture.viewModel.diagnosticActions.isEmpty,
+                   "Even a failed switch must retain the old report only as history, without active recovery")
         try expect(fixture.viewModel.lastError != nil, "The current failure must remain visible")
         await fixture.viewModel.runDiagnose()
         try expect(fixture.viewModel.diagnoseReport != nil && !fixture.viewModel.diagnosisNeedsRefresh,
                    "An explicit new diagnosis may replace the stale notice")
         await fixture.viewModel.setMode("global")
-        try expect(fixture.viewModel.diagnoseReport == nil && fixture.viewModel.diagnosisNeedsRefresh,
-                   "A mode change must invalidate the old route's diagnosis")
+        try expect(fixture.viewModel.diagnoseReport != nil && fixture.viewModel.diagnosisNeedsRefresh,
+                   "A mode change must mark the old route's retained diagnosis as stale")
     }
 
     @MainActor
@@ -1102,8 +1363,8 @@ struct ConnectionRecoveryTests {
         await diagnosis.value
         try expect(switchError != nil && fixture.viewModel.lastError == switchError,
                    "A late all-pass diagnosis must not erase a newer switch failure")
-        try expect(fixture.viewModel.diagnoseReport == nil && fixture.viewModel.diagnosisNeedsRefresh,
-                   "Results from before the switch cannot certify the current network")
+        try expect(fixture.viewModel.diagnoseReport != nil && fixture.viewModel.diagnosisNeedsRefresh && fixture.viewModel.diagnosticActions.isEmpty,
+                   "Late results remain readable history and cannot certify or repair the current network")
     }
 
     @MainActor
@@ -1113,8 +1374,8 @@ struct ConnectionRecoveryTests {
         await fixture.viewModel.runDiagnose()
         try fixture.set("proxy-active")
         await fixture.viewModel.refreshStatus()
-        try expect(fixture.viewModel.diagnoseReport == nil && fixture.viewModel.diagnosisNeedsRefresh,
-                   "An externally observed proxy change must invalidate cached diagnosis")
+        try expect(fixture.viewModel.diagnoseReport != nil && fixture.viewModel.diagnosisNeedsRefresh,
+                   "An externally observed proxy change must mark cached diagnosis as historical")
         await fixture.viewModel.runDiagnose()
         await fixture.viewModel.refreshStatus()
         try expect(fixture.viewModel.diagnoseReport != nil && !fixture.viewModel.diagnosisNeedsRefresh,
@@ -1128,10 +1389,130 @@ struct ConnectionRecoveryTests {
         await fixture.viewModel.runDiagnose()
         try fixture.set("fail-groups")
         await fixture.viewModel.refreshStatus()
-        try expect(fixture.viewModel.diagnoseReport == nil && fixture.viewModel.diagnosisNeedsRefresh,
-                   "An unavailable controller must invalidate all-pass even if cached route fields stay unchanged")
+        try expect(fixture.viewModel.diagnoseReport != nil && fixture.viewModel.diagnosisNeedsRefresh && fixture.viewModel.diagnosticActions.isEmpty,
+                   "A newly unavailable controller must retire all-pass but retain its timestamped report")
         try expect(!fixture.viewModel.proxyGroups.isEmpty && fixture.viewModel.proxyGroupsError != nil,
                    "Cached nodes remain useful while diagnostic success is retired")
+    }
+
+    private static func diagnosticReport(listener: String = "fail", action: String = "recoverCore", capture: String = "pass") throws -> DiagnoseReport {
+        let json = #"{"app":"ProxyCat","milestone":"test","schemaVersion":2,"observedAt":"2026-11-11T08:00:00Z","scope":"仅检查本地链路和测试地址","checks":[{"name":"controller","category":"runtime","status":"pass","message":"ready"},{"name":"proxy-listener","category":"runtime","status":"\#(listener)","message":"listener result","action":"\#(action)"},{"name":"traffic-capture","category":"runtime","status":"\#(capture)","message":"capture result","action":"enableSystemProxy"},{"name":"https-request","category":"network","status":"\#(listener == "pass" ? "pass" : "skipped")","message":"network result"}]}"#
+        return try JSONDecoder().decode(DiagnoseReport.self, from: Data(json.utf8))
+    }
+
+    @MainActor
+    private static func writeDiagnosis(_ report: DiagnoseReport, to fixture: Fixture, file: String = "diagnose-result.json") throws {
+        try JSONEncoder().encode(report).write(to: fixture.directory.appendingPathComponent(file))
+    }
+
+    static func diagnosticModelsDoNotOverstateOldOrIncompleteResults() throws {
+        let old = try JSONDecoder().decode(DiagnoseReport.self, from: Data(#"{"app":"ProxyCat","milestone":"milestone-1","checks":[{"name":"files","status":"pass","message":"exists"}]}"#.utf8))
+        try expect(!old.hasRuntimeEvidence && old.summary.contains("尚未验证") && old.timeLabel == "检测时间未知", "A legacy all-pass report cannot certify networking")
+        let ready = try diagnosticReport(listener: "pass")
+        try expect(ready.summary == "本地链路与测试地址通过" && ready.actions.isEmpty && ready.timeLabel.contains("11-11"), "A full report must name its limited scope and observation time")
+        var incomplete = ready
+        incomplete = DiagnoseReport(app: ready.app, milestone: ready.milestone, checks: ready.checks + [CheckResult(name: "new-check", status: "unknown", message: "unknown", suggestedFix: nil)], schemaVersion: 2)
+        try expect(incomplete.summary == "部分项目未检查", "Unknown check statuses must not pass")
+        let unknown = try diagnosticReport(action: "arbitraryShellCommand")
+        try expect(unknown.actions.isEmpty, "Only known diagnostic actions may be offered")
+        try expect(unknown.conclusion.contains("7890 未就绪"), "The main diagnostic result must explain the failed layer without opening details")
+    }
+
+    @MainActor
+    static func diagnosticRecoveryAlwaysVerifiesTheListener() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try writeDiagnosis(diagnosticReport(), to: fixture)
+        await fixture.viewModel.runDiagnose()
+        let before = fixture.commands
+        try expect(!before.contains("core start") && !before.contains("system-proxy on"), "Diagnosis itself must be read-only")
+        await fixture.viewModel.performDiagnosticAction(.recoverCore)
+        try expect(fixture.commands.filter { $0 == "diagnose --json" }.count == 2 && fixture.commands.filter { $0 == "core start" }.count == 1, "Every repair must run the existing core operation then recheck")
+        try expect(fixture.viewModel.diagnoseReport?.summary == "发现 1 项异常", "Helper success alone cannot certify a listener that still fails")
+        try writeDiagnosis(diagnosticReport(listener: "pass"), to: fixture, file: "diagnose-after-start.json")
+        await fixture.viewModel.performDiagnosticAction(.recoverCore)
+        try expect(fixture.viewModel.diagnoseReport?.summary == "本地链路与测试地址通过", "Verified evidence may replace the failure")
+        try expect(!fixture.commands.contains("system-proxy on") && !fixture.commands.contains(where: { $0.hasPrefix("tun ") || $0.hasPrefix("mode set") }), "Core recovery must not silently change capture or mode")
+    }
+
+    @MainActor
+    static func diagnosticRecoveryPreservesFailures() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try writeDiagnosis(diagnosticReport(), to: fixture)
+        await fixture.viewModel.runDiagnose()
+        try fixture.set("fail-start")
+        await fixture.viewModel.performDiagnosticAction(.recoverCore)
+        try expect(fixture.viewModel.lastError?.contains("saved config failed") == true && fixture.viewModel.diagnoseReport?.summary == "发现 1 项异常", "Post-repair diagnosis must preserve the command failure")
+        try expect(!fixture.viewModel.isRecoveringDiagnosis && !fixture.viewModel.isDiagnosing, "Failures must release operation controls")
+    }
+
+    @MainActor
+    static func diagnosticRecoveryGuardsTUNAndCampusPolicy() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try writeDiagnosis(diagnosticReport(), to: fixture)
+        await fixture.viewModel.runDiagnose()
+        fixture.viewModel.tunEnabled = true
+        await fixture.viewModel.performDiagnosticAction(.recoverCore)
+        try expect(!fixture.commands.contains("core start"), "An active TUN must block ordinary-core repair even with a stale action")
+        fixture.viewModel.tunEnabled = false
+        try fixture.set("campus-arrived")
+        await fixture.viewModel.performDiagnosticAction(.recoverCore)
+        try expect(!fixture.commands.contains("core start") && fixture.viewModel.campusProtectionNotice != nil, "Repair must obey campus disconnect policy")
+    }
+
+    @MainActor
+    static func diagnosticRecoveryDoesNotOverlapSwitches() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try writeDiagnosis(diagnosticReport(), to: fixture)
+        await fixture.viewModel.runDiagnose()
+        try fixture.set("hold-start")
+        let repair = Task { await fixture.viewModel.performDiagnosticAction(.recoverCore) }
+        for _ in 0..<300 {
+            if fixture.has("start-held") { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let started = fixture.has("start-held") && fixture.viewModel.isRecoveringDiagnosis
+        await fixture.viewModel.setTUNEnabled(true)
+        await fixture.viewModel.setMode("global")
+        await fixture.viewModel.performDiagnosticAction(.recoverCore)
+        let during = fixture.commands
+        try fixture.remove("hold-start")
+        await repair.value
+        try expect(started && during.filter { $0 == "core start" }.count == 1 && !during.contains("tun on --json") && !during.contains("mode set global"), "A pending repair must serialize UI operations and duplicate clicks")
+        await fixture.viewModel.setMode("global")
+        let count = fixture.commands.filter { $0 == "core start" }.count
+        await fixture.viewModel.performDiagnosticAction(.recoverCore)
+        try expect(fixture.commands.filter { $0 == "core start" }.count == count && fixture.viewModel.diagnosticActions.isEmpty, "A context change must retire diagnostic actions")
+    }
+
+    @MainActor
+    static func diagnosticProxyEnableIsExplicitAndRechecked() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try writeDiagnosis(diagnosticReport(listener: "pass", capture: "warn"), to: fixture)
+        await fixture.viewModel.runDiagnose()
+        try expect(!fixture.commands.contains("system-proxy on") && fixture.viewModel.diagnosticActions == [.enableSystemProxy], "An off proxy is explained without silently turning it on")
+        await fixture.viewModel.performDiagnosticAction(.enableSystemProxy)
+        try expect(fixture.has("proxy-active") && fixture.commands.filter { $0 == "diagnose --json" }.count == 2, "The explicitly requested capture action must be verified afterward")
+    }
+
+    @MainActor
+    static func diagnosticResultsCannotEraseANewerError() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try fixture.set("hold-diagnose")
+        let diagnosis = Task { await fixture.viewModel.runDiagnose() }
+        for _ in 0..<300 {
+            if fixture.has("diagnose-held") { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        fixture.viewModel.lastError = "newer operation failed"
+        try fixture.remove("hold-diagnose")
+        await diagnosis.value
+        try expect(fixture.viewModel.lastError == "newer operation failed", "Even an otherwise-current report must preserve newer operation errors")
     }
 
     @MainActor
@@ -1181,5 +1562,119 @@ struct ConnectionRecoveryTests {
             try expect(image.isTemplate == (state.color == nil), "Active colors must survive macOS template rendering")
         }
         withExtendedLifetime(observer) {}
+    }
+}
+
+extension ConnectionRecoveryTests {
+    @MainActor
+    private static func preferenceFixture(_ fixture: Fixture, state: String = "applied", route: String = "proxy", rule: String = "DomainSuffix", outcome: String = "responded") throws {
+        try Data("{\"host\":\"example.com\",\"route\":\"\(route)\",\"message\":\"网站偏好已保存\",\"applicationState\":\"\(state)\"}".utf8)
+            .write(to: fixture.directory.appendingPathComponent("preference-result.json"))
+        var evidence = try JSONSerialization.jsonObject(with: websiteFixture(route, outcome: outcome)) as! [String: Any]
+        evidence["rule"] = rule
+        evidence["rulePayload"] = rule == "DomainSuffix" ? "example.com" : ""
+        evidence["statusCode"] = outcome == "responded" ? 200 : 0
+        try JSONSerialization.data(withJSONObject: evidence).write(to: fixture.directory.appendingPathComponent("website-result.json"))
+    }
+
+    static func websitePreferenceEvidenceRequiresTheSavedRule() throws {
+        var evidence = try JSONSerialization.jsonObject(with: websiteFixture()) as! [String: Any]
+        let match = try JSONDecoder().decode(WebsiteCheckResult.self, from: JSONSerialization.data(withJSONObject: evidence))
+        try expect(!match.verifiesPreference(host: "example.com", route: "proxy"), "A MATCH proxy connection cannot verify the saved domain preference")
+        evidence["rule"] = "DomainSuffix"; evidence["rulePayload"] = "example.com"
+        let saved = try JSONDecoder().decode(WebsiteCheckResult.self, from: JSONSerialization.data(withJSONObject: evidence))
+        try expect(saved.verifiesPreference(host: "https://EXAMPLE.COM.:8443/path", route: "proxy"), "Verification should normalize URL, port and trailing dot")
+        try expect(!saved.verifiesPreference(host: "different.com", route: "proxy") && !saved.verifiesPreference(host: "example.com", route: "direct"), "A different host or route must not verify the requested preference")
+        evidence["chains"] = [String]()
+        let unknown = try JSONDecoder().decode(WebsiteCheckResult.self, from: JSONSerialization.data(withJSONObject: evidence))
+        try expect(!unknown.verifiesPreference(host: "example.com", route: "proxy"), "Rule text without a connection chain is not route evidence")
+    }
+
+    @MainActor
+    static func websitePreferenceAppliesAndVerifiesTheRequest() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try preferenceFixture(fixture)
+        await fixture.viewModel.checkWebsite("http://example.com:8080/specific-path")
+        await fixture.viewModel.setWebsitePreference(host: "example.com", route: "proxy")
+        try expect(fixture.viewModel.websitePreferenceStatus?.contains("已确认命中") == true && fixture.viewModel.websitePreferenceVerification?.node == "Node A", "Saving should verify the actual rule and node")
+        try expect(fixture.commands.filter { $0 == "website-check http://example.com:8080/specific-path --json" }.count == 2, "Recheck should preserve the entered scheme, port and path")
+        try expect(fixture.viewModel.websiteResultIsCurrent && !fixture.viewModel.isSavingWebsitePreference, "New evidence should replace the old website result and release the operation guard")
+    }
+
+    @MainActor
+    static func websitePreferenceDoesNotCertifyUnknownRoutesOrFailures() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try preferenceFixture(fixture, rule: "Match")
+        await fixture.viewModel.setWebsitePreference(host: "example.com", route: "proxy")
+        try expect(fixture.viewModel.websitePreferenceStatus?.contains("尚未验证命中") == true, "A matching route from MATCH must not be reported as preference success")
+        try preferenceFixture(fixture, outcome: "timeout")
+        await fixture.viewModel.setWebsitePreference(host: "example.com", route: "proxy")
+        try expect(fixture.viewModel.websitePreferenceStatus?.contains("已确认命中") == true && fixture.viewModel.websitePreferenceStatus?.contains("超时") == true, "Confirmed routing must still explain a failed HTTP request")
+        let checked = fixture.commands.filter { $0.hasPrefix("website-check") }.count
+        try fixture.set("fail-preference")
+        await fixture.viewModel.setWebsitePreference(host: "example.com", route: "direct")
+        try expect(fixture.viewModel.websitePreferenceStatus?.contains("失败") == true && fixture.viewModel.websitePreferenceVerification == nil, "Application failure must retire previous verification")
+        try expect(fixture.commands.filter { $0.hasPrefix("website-check") }.count == checked, "Failed application must not run a check against the old configuration")
+    }
+
+    @MainActor
+    static func websitePreferenceDefersTUNAndNonRuleMode() async throws {
+        let fixture = try Fixture()
+        try fixture.set("tun-active")
+        await fixture.viewModel.refreshStatus()
+        try preferenceFixture(fixture, state: "pending")
+        await fixture.viewModel.setWebsitePreference(host: "example.com", route: "proxy")
+        try expect(!fixture.commands.contains(where: { $0.hasPrefix("website-check") || $0 == "tun off" || $0 == "core restart" }), "Saving a deferred TUN preference must not disrupt the active connection or certify the old rules")
+        try fixture.remove("tun-active")
+        try Data("global".utf8).write(to: fixture.directory.appendingPathComponent("mode"))
+        try preferenceFixture(fixture)
+        await fixture.viewModel.refreshStatus()
+        await fixture.viewModel.setWebsitePreference(host: "example.com", route: "proxy")
+        try expect(fixture.viewModel.websitePreferenceStatus?.contains("暂不参与分流") == true && !fixture.commands.contains(where: { $0.hasPrefix("website-check") }), "Global mode must explain the limited scope instead of claiming a preference match")
+    }
+
+    @MainActor
+    static func websitePreferenceRemovalRechecksSubscriptionRoute() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try preferenceFixture(fixture, route: "direct", rule: "Match")
+        await fixture.viewModel.removeWebsitePreference(host: "example.com")
+        try expect(fixture.commands.contains("preferences remove example.com --json") && fixture.viewModel.websitePreferenceStatus?.contains("已移除") == true && fixture.viewModel.websitePreferenceVerification?.route == "direct", "Restoring defaults should recheck and show the subscription route without claiming the removed rule still matched")
+    }
+
+    @MainActor
+    static func websitePreferenceVerificationRejectsChangedContext() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try preferenceFixture(fixture)
+        try fixture.set("hold-website")
+        let task = Task { await fixture.viewModel.setWebsitePreference(host: "example.com", route: "proxy") }
+        for _ in 0..<300 { if fixture.has("website-held") { break }; try await Task.sleep(nanoseconds: 10_000_000) }
+        try expect(fixture.has("website-held"), "Preference verification should reach the isolated request")
+        try Data("direct".utf8).write(to: fixture.directory.appendingPathComponent("mode"))
+        await fixture.viewModel.refreshStatus()
+        try fixture.remove("hold-website")
+        await task.value
+        try expect(fixture.viewModel.websitePreferenceVerification == nil && fixture.viewModel.websitePreferenceStatus?.contains("发生变化") == true, "A late check from the previous mode must never certify current routing")
+    }
+
+    @MainActor
+    static func websitePreferenceSerializesLifecycleControls() async throws {
+        let fixture = try Fixture()
+        await fixture.viewModel.refreshStatus()
+        try preferenceFixture(fixture)
+        try fixture.set("hold-preference")
+        let task = Task { await fixture.viewModel.setWebsitePreference(host: "example.com", route: "proxy") }
+        for _ in 0..<300 { if fixture.has("preference-held") { break }; try await Task.sleep(nanoseconds: 10_000_000) }
+        try expect(fixture.has("preference-held") && fixture.viewModel.isSavingWebsitePreference, "The guard should cover application and verification")
+        await fixture.viewModel.setWebsitePreference(host: "example.com", route: "direct")
+        await fixture.viewModel.setTUNEnabled(true)
+        await fixture.viewModel.setMode("global")
+        await fixture.viewModel.updateSubscription()
+        try expect(fixture.commands.filter { $0.hasPrefix("preferences set") }.count == 1 && !fixture.commands.contains("tun on --json") && !fixture.commands.contains("mode set global") && !fixture.commands.contains("subscription update"), "Repeated clicks, TUN, mode and subscriptions must not race the configuration transaction")
+        try fixture.remove("hold-preference")
+        await task.value
     }
 }

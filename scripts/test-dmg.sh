@@ -30,11 +30,12 @@ MOUNTED=true
 from ds_store import DSStore
 import sys
 with DSStore.open(sys.argv[1], 'r') as store:
-    assert store['ProxyCat.app']['Iloc'] == (170, 190)
-    assert store['Applications']['Iloc'] == (490, 190)
-    assert store['.']['bwsp']['WindowBounds'] == '{{200, 140}, {660, 440}}'
+    assert store['安装 ProxyCat.app']['Iloc'] == (118, 355)
+    assert store['ProxyCat.app']['Iloc'] == (180, 175)
+    assert store['Applications']['Iloc'] == (460, 175)
+    assert store['.']['bwsp']['WindowBounds'] == '{{200, 140}, {640, 480}}'
     assert store['.']['icvp']['backgroundType'] == 2
-    assert store['.']['icvp']['iconSize'] == 104
+    assert store['.']['icvp']['iconSize'] == 88
 PY
 APP_PATH="$MOUNT_PATH/ProxyCat.app"
 [[ -x "$APP_PATH/Contents/MacOS/ProxyCat" && -x "$APP_PATH/Contents/Resources/proxyctl" ]] || fail "Missing app executables"
@@ -46,4 +47,12 @@ for EXECUTABLE in "$APP_PATH/Contents/MacOS/ProxyCat" "$APP_PATH/Contents/Resour
     [[ " $ARCHITECTURES " == *" x86_64 "* && " $ARCHITECTURES " == *" arm64 "* ]] || fail "Missing universal architectures: $EXECUTABLE"
 done
 codesign --verify --deep --strict --verbose "$APP_PATH"
+INSTALLER_PATH="$MOUNT_PATH/安装 ProxyCat.app"
+[[ -x "$INSTALLER_PATH/Contents/MacOS/ProxyCatInstaller" ]] || fail "Missing native installer"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INSTALLER_PATH/Contents/Info.plist")" == com.cassette.proxycat.installer ]] || fail "Installer must have its own app identifier"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLER_PATH/Contents/Info.plist")" == "$VERSION" ]] || fail "Installer version differs"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INSTALLER_PATH/Contents/Info.plist")" == "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")" ]] || fail "Installer build differs"
+ARCHITECTURES="$(lipo -archs "$INSTALLER_PATH/Contents/MacOS/ProxyCatInstaller")"
+[[ " $ARCHITECTURES " == *" x86_64 "* && " $ARCHITECTURES " == *" arm64 "* ]] || fail "Installer is not universal"
+codesign --verify --deep --strict --verbose "$INSTALLER_PATH"
 echo "Passed DMG integrity, mounted layout, version, universal binaries and code signature checks."

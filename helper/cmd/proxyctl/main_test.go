@@ -10,9 +10,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Cass-ette/ProxyCat/helper/internal/controller"
+	"github.com/Cass-ette/ProxyCat/helper/internal/paths"
+	"github.com/Cass-ette/ProxyCat/helper/internal/preferences"
+	"github.com/Cass-ette/ProxyCat/helper/internal/profile"
 )
+
+func installAcceptingMihomo(t *testing.T) {
+	t.Helper()
+	p, err := paths.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p.Mihomo), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n[ \"$1\" = \"-t\" ] && [ \"$2\" = \"-d\" ] && [ \"$4\" = \"-f\" ] && [ -s \"$5\" ]\n"
+	if err := os.WriteFile(p.Mihomo, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestDiagnoseJSONCommand(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -105,8 +124,97 @@ func TestSubscriptionAddCommand(t *testing.T) {
 	}
 }
 
+func TestBootstrapInstallsMihomoBeforeValidatingConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("proxies:\n  - name: Node\n    type: direct\nproxy-groups:\n  - name: Proxy\n    type: select\n    proxies: [Node]\nrules:\n  - MATCH,Proxy\n"))
+	}))
+	defer server.Close()
+
+	profileID, err := saveProfileSubscription(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := paths.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousInstaller := installMihomoBinary
+	installMihomoBinary = func(path string) (string, error) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n[ \"$1\" = \"-t\" ] && [ \"$2\" = \"-d\" ] && [ \"$4\" = \"-f\" ] && [ -s \"$5\" ]\n"), 0o755); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+	t.Cleanup(func() { installMihomoBinary = previousInstaller })
+
+	var stdout, stderr bytes.Buffer
+	if code := prepareBootstrapProfile(profileID, &stdout, &stderr); code != 0 {
+		t.Fatalf("bootstrap preparation exit = %d, stderr=%s, stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if _, err := os.Stat(p.Mihomo); err != nil {
+		t.Fatalf("Mihomo was not installed before config generation: %v", err)
+	}
+	activeConfig, err := os.ReadFile(p.ConfigYAML)
+	if err != nil || !strings.Contains(string(activeConfig), "MATCH,Proxy") {
+		t.Fatalf("bootstrap did not activate generated config: %q, %v", activeConfig, err)
+	}
+}
+
+func TestWebsitePreferenceWithoutActiveConfigDoesNotClaimRestart(t *testing.T) {
+	p := paths.ForHome(t.TempDir())
+	result, err := commitConfiguration(p, map[string][]byte{p.PreferencesJSON: []byte(`{"preferences":[]}`)})
+	if err != nil || result.State != "inactive" || strings.Contains(result.Message, "已应用") {
+		t.Fatalf("unexpected website preference status: %+v %v", result, err)
+	}
+}
+
+func TestMaintenanceGeoChangeUsesObservationTimeInsteadOfFileMtime(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	geoDir := filepath.Join(home, ".config", "mihomo")
+	if err := os.MkdirAll(geoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	geoFile := filepath.Join(geoDir, "geoip.metadb")
+	if err := os.WriteFile(geoFile, []byte("initial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldMtime := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(geoFile, oldMtime, oldMtime); err != nil {
+		t.Fatal(err)
+	}
+	var first bytes.Buffer
+	if code := run([]string{"maintenance", "status", "--json"}, &first, io.Discard); code != 0 {
+		t.Fatalf("initial status exit = %d", code)
+	}
+	changedMtime := time.Now().Add(-12 * time.Hour)
+	if err := os.Chtimes(geoFile, changedMtime, changedMtime); err != nil {
+		t.Fatal(err)
+	}
+	observedAfter := time.Now().UTC()
+	var second bytes.Buffer
+	if code := run([]string{"maintenance", "status", "--json"}, &second, io.Discard); code != 0 {
+		t.Fatalf("updated status exit = %d", code)
+	}
+	var status struct {
+		GeoLastObservedChange string `json:"geoLastObservedChange"`
+	}
+	if err := json.Unmarshal(second.Bytes(), &status); err != nil {
+		t.Fatalf("status is not JSON: %v\n%s", err, second.String())
+	}
+	changedAt, err := time.Parse(time.RFC3339, status.GeoLastObservedChange)
+	if err != nil || changedAt.Before(observedAfter.Add(-time.Second)) {
+		t.Fatalf("geo observation time = %q, err=%v, expected a recent observation", status.GeoLastObservedChange, err)
+	}
+}
+
 func TestConfigGenerateUsesProbeSelection(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	installAcceptingMihomo(t)
 	var firstUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if firstUserAgent == "" {
@@ -200,7 +308,7 @@ func TestSubscriptionUpdateShowsSuggestedFixForInvalidProbe(t *testing.T) {
 	stdout := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)
 	exitCode := run([]string{"subscription", "update"}, stdout, stderr)
-	if exitCode != 0 {
+	if exitCode != 1 {
 		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "建议：") {
@@ -208,9 +316,10 @@ func TestSubscriptionUpdateShowsSuggestedFixForInvalidProbe(t *testing.T) {
 	}
 }
 
-func TestSubscriptionUpdateUsesProbe(t *testing.T) {
+func TestSubscriptionUpdateDoesNotReportLegacyProbeAsSuccess(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
+	installAcceptingMihomo(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`proxies:
@@ -236,14 +345,165 @@ rules:
 	stdout := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)
 	exitCode := run([]string{"subscription", "update"}, stdout, stderr)
-	if exitCode != 0 {
+	if exitCode != 1 {
 		t.Fatalf("exitCode = %d, stderr = %s", exitCode, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "selected clash-yaml") {
 		t.Fatalf("update output missing probe selection: %s", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "Valid: 1 proxies") {
-		t.Fatalf("update output missing proxy count: %s", stdout.String())
+	if !strings.Contains(stdout.String(), "仅完成连通性检查") || !strings.Contains(stdout.String(), "未生成或应用配置") {
+		t.Fatalf("update output reported no clear legacy limitation: %s", stdout.String())
+	}
+}
+
+func TestSubscriptionUpdateKeepsOldConfigWhenMihomoRejectsCandidate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("proxies:\n  - name: NewNode\n    type: direct\nproxy-groups:\n  - name: Proxy\n    type: select\n    proxies: [NewNode]\nrules:\n  - MATCH,Proxy\n"))
+	}))
+	defer server.Close()
+
+	profileID, err := saveProfileSubscription(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := paths.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := profile.LoadAll(p.ProfilesDir)
+	if err != nil || len(profiles) != 1 {
+		t.Fatalf("load test profile: %v, %v", profiles, err)
+	}
+	profiles[0].Active = true
+	if err := profile.SaveAll(p.ProfilesDir, profiles); err != nil {
+		t.Fatal(err)
+	}
+	oldProfileConfig := []byte("old profile config")
+	oldActiveConfig := []byte("old active config")
+	for path, content := range map[string][]byte{
+		profile.ProfileConfigPath(p.ProfilesDir, profileID): oldProfileConfig,
+		p.ConfigYAML: oldActiveConfig,
+	} {
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(p.Mihomo), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Mihomo, []byte("#!/bin/sh\necho 'bad URL https://user:pass@example.com/sub?token=secret' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"subscription", "update"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("update exit = %d, stderr=%s", code, stderr.String())
+	}
+	for path, want := range map[string][]byte{
+		profile.ProfileConfigPath(p.ProfilesDir, profileID): oldProfileConfig,
+		p.ConfigYAML: oldActiveConfig,
+	} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != string(want) {
+			t.Fatalf("failed update changed %s: %q, %v", path, got, err)
+		}
+	}
+	if strings.Contains(stdout.String(), "user:pass") || strings.Contains(stdout.String(), "token=secret") {
+		t.Fatalf("validation output leaked credentials: %s", stdout.String())
+	}
+}
+
+func TestWebsitePreferenceValidationFailurePreservesStoredFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p, err := paths.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldConfig := []byte("proxies: [{name: Node, type: direct}]\nproxy-groups: [{name: Proxy, type: select, proxies: [Node]}]\nrules: [\"MATCH,Proxy\"]\n")
+	basePath := subscriptionBasePath(p.ConfigYAML)
+	if err := os.MkdirAll(filepath.Dir(p.ConfigYAML), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{p.ConfigYAML, basePath} {
+		if err := os.WriteFile(path, oldConfig, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(p.Mihomo), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Mihomo, []byte("#!/bin/sh\necho invalid config >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"preferences", "set", "proxy", "example.com", "--json"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("preference exit = %d, stderr=%s", code, stderr.String())
+	}
+	for _, path := range []string{p.ConfigYAML, basePath} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != string(oldConfig) {
+			t.Fatalf("failed preference changed %s: %q, %v", path, got, err)
+		}
+	}
+	if _, err := os.Stat(p.PreferencesJSON); !os.IsNotExist(err) {
+		t.Fatalf("failed preference was persisted: %v", err)
+	}
+}
+
+func TestActivatingProfileSwitchesItsSubscriptionBaseAtomically(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p, err := paths.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const profileID = "selected"
+	profileDir, err := profile.EnsureProfileDir(p.ProfilesDir, profileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := []byte("proxies: [{name: Node, type: direct}]\nproxy-groups: [{name: Proxy, type: select, proxies: [Node]}]\nrules: [\"MATCH,Proxy\"]\n")
+	effective, err := preferences.ApplyToYAML(base, preferences.Store{Preferences: []preferences.Preference{{Host: "example.com", Route: "proxy"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "config.yaml"), []byte(effective), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subscriptionBasePath(filepath.Join(profileDir, "config.yaml")), base, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := profile.SaveAll(p.ProfilesDir, []profile.Profile{{ID: profileID, Name: "Selected"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := preferences.Save(p.PreferencesJSON, preferences.Store{Preferences: []preferences.Preference{{Host: "example.com", Route: "proxy"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p.ConfigYAML), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ConfigYAML, []byte("old active config"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subscriptionBasePath(p.ConfigYAML), []byte("old active base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installAcceptingMihomo(t)
+	if err := activateProfileWithPreferences(p, profileID); err != nil {
+		t.Fatal(err)
+	}
+	activeConfig, err := os.ReadFile(p.ConfigYAML)
+	if err != nil || !strings.Contains(string(activeConfig), "DOMAIN-SUFFIX,example.com,Proxy") {
+		t.Fatalf("active config did not apply website preference: %s, %v", activeConfig, err)
+	}
+	activeBase, err := os.ReadFile(subscriptionBasePath(p.ConfigYAML))
+	if err != nil || strings.Contains(string(activeBase), "DOMAIN-SUFFIX,example.com") || !strings.Contains(string(activeBase), "MATCH,Proxy") {
+		t.Fatalf("active subscription base is stale or contains preference rules: %s, %v", activeBase, err)
+	}
+	profiles, err := profile.LoadAll(p.ProfilesDir)
+	if err != nil || len(profiles) != 1 || !profiles[0].Active {
+		t.Fatalf("profile index did not activate selected profile: %+v, %v", profiles, err)
 	}
 }
 

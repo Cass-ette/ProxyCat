@@ -30,6 +30,20 @@ func TestWebsiteURL(t *testing.T) {
 	}
 }
 
+func TestWebsiteDiagnosticRejectsChangedProxyPort(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/configs" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		fmt.Fprint(w, `{"mixed-port":12345,"mode":"rule"}`)
+	}))
+	defer api.Close()
+	result, err := NewClient(api.URL).CheckWebsiteAtPort(context.Background(), "https://example.invalid", 7890)
+	if err != nil || result.Outcome != "proxyUnavailable" {
+		t.Fatalf("changed listener was accepted: %+v %v", result, err)
+	}
+}
+
 // The controller exposes unrelated same-host traffic. Only our socket may
 // supply evidence; credentials, query strings and paths are absent from output.
 func TestWebsiteSocketCorrelation(t *testing.T) {

@@ -2,6 +2,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -130,8 +131,13 @@ func WaitForPort(port int, total, perAttempt time.Duration) bool {
 // If multiple processes exist, returns the first one (oldest).
 // Returns (running bool, pid int, err error).
 func Status() (bool, int, error) {
+	return StatusContext(context.Background())
+}
+
+// StatusContext allows a diagnostic to bound process inspection.
+func StatusContext(ctx context.Context) (bool, int, error) {
 	// Run pgrep -x mihomo to find the process
-	output, err := exec.Command("pgrep", "-x", "mihomo").Output()
+	output, err := exec.CommandContext(ctx, "pgrep", "-x", "mihomo").Output()
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && exit.ExitCode() == 1 {

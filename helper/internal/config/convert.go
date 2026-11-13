@@ -24,6 +24,48 @@ func NormalizeClashYAML(content []byte) (string, error) {
 	return marshalConfig(cfg)
 }
 
+func EnableGeoAutoUpdate(content []byte) (string, error) {
+	var cfg mihomoConfig
+	if err := yaml.Unmarshal(content, &cfg); err != nil {
+		return "", err
+	}
+	cfg["geo-auto-update"] = true
+	cfg["geo-update-interval"] = 24
+	return marshalConfig(cfg)
+}
+
+func GeoAutoUpdateEnabled(content []byte) bool {
+	var cfg mihomoConfig
+	if yaml.Unmarshal(content, &cfg) != nil {
+		return false
+	}
+	return cfg["geo-auto-update"] == true
+}
+
+func ValidateForRuntime(content []byte) error {
+	if _, err := ValidateRuntimeMap(content); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ValidateRuntimeMap(content []byte) (map[string]interface{}, error) {
+	var cfg map[string]interface{}
+	if err := yaml.Unmarshal(content, &cfg); err != nil {
+		return nil, err
+	}
+	if _, ok := cfg["rules"]; !ok {
+		return nil, fmt.Errorf("config has no rules")
+	}
+	if _, ok := cfg["proxies"]; !ok {
+		return nil, fmt.Errorf("config has no proxies")
+	}
+	if _, ok := cfg["proxy-groups"]; !ok {
+		return nil, fmt.Errorf("config has no proxy-groups")
+	}
+	return cfg, nil
+}
+
 // ConvertURIToYAML converts a URI-list subscription into a minimal Mihomo config.
 func ConvertURIToYAML(content []byte, format Format) (string, error) {
 	uris, err := extractURIs(content, format)
@@ -70,6 +112,11 @@ func applyProxyCatDefaults(cfg mihomoConfig) {
 	cfg["mode"] = "rule"
 	cfg["log-level"] = "info"
 	cfg["external-controller"] = "127.0.0.1:9090"
+	// Mihomo owns the verified geodata download and replacement path. Keeping
+	// this enabled in both ordinary and TUN configs makes their data source the
+	// same without ProxyCat copying files while a core is using them.
+	cfg["geo-auto-update"] = true
+	cfg["geo-update-interval"] = 24
 	// Subscription data cannot opt into a privileged capture mode.
 	cfg["tun"] = map[string]interface{}{"enable": false}
 }

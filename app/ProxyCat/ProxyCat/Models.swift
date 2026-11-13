@@ -63,6 +63,58 @@ struct DiagnoseReport: Codable {
     let app: String
     let milestone: String
     let checks: [CheckResult]
+    var schemaVersion: Int? = nil
+    var observedAt: String? = nil
+    var scope: String? = nil
+
+    var hasRuntimeEvidence: Bool {
+        (schemaVersion ?? 0) >= 2 && ["controller", "proxy-listener", "traffic-capture", "https-request"].allSatisfy { name in
+            checks.contains { $0.name == name }
+        }
+    }
+
+    var summary: String {
+        guard !checks.isEmpty else { return "未获得检查结果" }
+        guard hasRuntimeEvidence else { return "仅有本地检查，网络尚未验证" }
+        let failures = checks.filter { $0.status == "fail" }.count
+        if failures > 0 { return "发现 \(failures) 项异常" }
+        if checks.contains(where: { !["pass", "warn", "fail"].contains($0.status) }) { return "部分项目未检查" }
+        if checks.contains(where: { $0.status == "warn" }) { return "检查完成，有提示" }
+        return "本地链路与测试地址通过"
+    }
+
+    var timeLabel: String {
+        guard let observedAt, let date = ISO8601DateFormatter().date(from: observedAt) else { return "检测时间未知" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm:ss"
+        return "检测于 " + formatter.string(from: date)
+    }
+
+    var conclusion: String {
+        guard hasRuntimeEvidence else { return "本地文件检查不能说明代理或网络是否可用。" }
+        if checks.contains(where: { $0.name == "proxy-listener" && $0.status == "fail" }) {
+            return "本地代理 7890 未就绪；进程还在也不代表代理可用。"
+        }
+        if checks.contains(where: { $0.name == "controller" && $0.status == "fail" }) {
+            return "控制器暂不可用，尚未确认本地代理链路。"
+        }
+        if let network = checks.first(where: { $0.name == "https-request" }), network.status != "pass" {
+            return network.status == "skipped" ? "本次联网测试未完成，请查看详情。" : "本地代理可连接，但本次 HTTPS 测试未通过。可检测具体网站进一步定位。"
+        }
+        if let capture = checks.first(where: { $0.name == "traffic-capture" && $0.status != "pass" }) { return capture.message }
+        return "仅代表本地链路和测试地址在检测时可用，具体网站可单独检测。"
+    }
+
+    var actions: [DiagnosticAction] {
+        var actions: [DiagnosticAction] = []
+        for check in checks where check.status != "pass" {
+            guard let raw = check.action, let action = DiagnosticAction(rawValue: raw), !actions.contains(action) else { continue }
+            // Older helpers have no runtime evidence: never infer a repair.
+            if !hasRuntimeEvidence && action.changesNetwork { continue }
+            actions.append(action)
+        }
+        return actions
+    }
 }
 
 struct CheckResult: Codable {
@@ -70,6 +122,41 @@ struct CheckResult: Codable {
     let status: String
     let message: String
     let suggestedFix: String?
+    var category: String? = nil
+    var title: String? = nil
+    var action: String? = nil
+
+    var displayTitle: String { title ?? name }
+    var section: String {
+        switch category {
+        case "static": return "本地文件"
+        case "runtime": return "运行状态"
+        case "network": return "联网测试"
+        default: return "其他检查"
+        }
+    }
+}
+
+enum DiagnosticAction: String, Identifiable {
+    case recoverCore, enableSystemProxy, checkWebsite, openLogs
+    var id: String { rawValue }
+    var changesNetwork: Bool { self == .recoverCore || self == .enableSystemProxy }
+    var title: String {
+        switch self {
+        case .recoverCore: return "恢复本地代理并复检"
+        case .enableSystemProxy: return "开启系统代理并复检"
+        case .checkWebsite: return "检测具体网站"
+        case .openLogs: return "查看日志"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .recoverCore: return "arrow.clockwise"
+        case .enableSystemProxy: return "network"
+        case .checkWebsite: return "globe"
+        case .openLogs: return "doc.text.magnifyingglass"
+        }
+    }
 }
 
 struct UpdateEvent: Codable {
@@ -129,6 +216,44 @@ struct Profile: Codable, Identifiable {
     let active: Bool
     var traffic: SubscriptionTraffic? = nil
     var trafficCheckedAt: String? = nil
+}
+
+struct WebsitePreference: Codable, Identifiable {
+    let host: String
+    let route: String
+    var createdAt: String? = nil
+    var id: String { host }
+
+    static func hostKey(_ input: String) -> String {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = value.contains("://") ? value : "https://" + value
+        return (URLComponents(string: url)?.host ?? value).lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".[]"))
+    }
+}
+
+struct WebsitePreferenceStore: Codable {
+    var preferences: [WebsitePreference]
+}
+
+struct WebsitePreferenceResult: Codable {
+    let host: String
+    let route: String?
+    let message: String
+    var applicationState: String? = nil
+}
+
+struct MaintenanceStatus: Codable {
+    var configApplicationState: String? = nil
+    var configApplicationMessage: String? = nil
+    var subscriptionLastAttempt: String? = nil
+    var subscriptionLastSuccess: String? = nil
+    var subscriptionLastError: String? = nil
+	var subscriptionInProgress: Bool? = nil
+	var geoLastObservedChange: String? = nil
+    var geoLastError: String? = nil
+    var observedAt: String? = nil
+    var geoAutoUpdate: Bool? = nil
 }
 
 struct SubscriptionTraffic: Codable {
@@ -350,6 +475,18 @@ struct WebsiteCheckResult: Codable {
 
     var summary: String { "这次检测\(route == "unknown" ? "路径未确认" : "走\(routeLabel)")，\(reason)；\(outcomeLabel)。" }
     var connectionFailed: Bool { ["timeout", "connectionFailed", "tlsFailed", "tunnelFailed"].contains(outcome) }
+
+    func verifiesPreference(host expectedHost: String, route expectedRoute: String) -> Bool {
+        let expected = WebsitePreference.hostKey(expectedHost)
+        guard mode == "rule", route == expectedRoute, !chains.isEmpty,
+              WebsitePreference.hostKey(host) == expected else { return false }
+        switch rule.lowercased() {
+        case "domainsuffix": return rulePayload.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) == expected
+        case "ipcidr": return rulePayload == expected + "/32"
+        case "ipcidr6": return rulePayload.lowercased() == expected + "/128"
+        default: return false
+        }
+    }
 }
 
 enum RoutingRule {

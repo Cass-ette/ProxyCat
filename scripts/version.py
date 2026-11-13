@@ -47,10 +47,11 @@ def check(root=ROOT, tag=None, previous_tags=()):
 def bump(level, root=ROOT):
     version, build = read_version(root)
     parts = list(map(int, version.split(".")))
-    index = {"major": 0, "minor": 1, "patch": 2}[level]
-    parts[index] += 1
-    for i in range(index + 1, 3):
-        parts[i] = 0
+    if level != "build":
+        index = {"major": 0, "minor": 1, "patch": 2}[level]
+        parts[index] += 1
+        for i in range(index + 1, 3):
+            parts[i] = 0
     updated = ".".join(map(str, parts))
     path = root / INFO
     text = path.read_text()
@@ -70,7 +71,7 @@ def main():
     validate = commands.add_parser("check")
     validate.add_argument("--tag")
     change = commands.add_parser("bump")
-    change.add_argument("level", choices=("major", "minor", "patch"))
+    change.add_argument("level", choices=("major", "minor", "patch", "build"))
     args = parser.parse_args()
     if args.command == "bump":
         version, build = bump(args.level)

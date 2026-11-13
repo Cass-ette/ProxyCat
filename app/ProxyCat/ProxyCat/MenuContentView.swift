@@ -31,6 +31,7 @@ struct MenuContentView: View {
                     Divider()
                     controlsSection
                         .padding(.top, 10)
+                        .disabled(viewModel.isRecoveringDiagnosis)
 
                     if hasFeedback {
                         feedbackSection
@@ -176,14 +177,39 @@ struct MenuContentView: View {
                         .padding(.horizontal, 16)
                 } else {
                     profileSection
-                    MenuButton("更新当前订阅", icon: "arrow.clockwise") {
+                    maintenanceSummary
+                    MenuButton(viewModel.isUpdatingSubscription ? "正在更新订阅…" : "更新当前订阅", icon: viewModel.isUpdatingSubscription ? "arrow.triangle.2.circlepath" : "arrow.clockwise") {
                         Task { await viewModel.updateSubscription() }
                     }
-                    .disabled(isBootstrapping || viewModel.isBootstrapping)
+                    .disabled(isBootstrapping || viewModel.isBootstrapping || viewModel.isUpdatingSubscription)
                 }
             }
         }
         .padding(.bottom, profilesExpanded ? 8 : 0)
+    }
+
+    private var maintenanceSummary: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if viewModel.maintenanceStatus?.subscriptionInProgress == true {
+                Text("订阅：后台更新中…")
+            } else {
+                Text("订阅上次成功：\(viewModel.maintenanceTime(viewModel.maintenanceStatus?.subscriptionLastSuccess))")
+            }
+            if let attempted = viewModel.maintenanceStatus?.subscriptionLastAttempt {
+                Text("最近尝试：\(viewModel.maintenanceTime(attempted))")
+            }
+            if let error = viewModel.maintenanceStatus?.subscriptionLastError, !error.isEmpty {
+                Text("上次更新失败：\(error)").foregroundColor(.orange)
+            }
+            if let message = viewModel.maintenanceStatus?.configApplicationMessage {
+                Text(message).foregroundColor(["pending", "unknown", "rolledBack"].contains(viewModel.maintenanceStatus?.configApplicationState ?? "") ? .orange : .secondary)
+            }
+        }
+        .font(.system(size: 10))
+        .foregroundColor(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
     }
 
     private func showDeleteConfirmation(for profile: Profile) {
@@ -690,7 +716,7 @@ struct MenuContentView: View {
     }
 
     private var hasFeedback: Bool {
-        viewModel.lastError != nil || viewModel.testResult != nil || viewModel.diagnoseReport != nil || viewModel.diagnosisNeedsRefresh
+        viewModel.lastError != nil || viewModel.testResult != nil || viewModel.diagnoseReport != nil || viewModel.diagnosisNeedsRefresh || viewModel.isDiagnosing || viewModel.isRecoveringDiagnosis
     }
 
     private var feedbackSection: some View {
@@ -710,10 +736,16 @@ struct MenuContentView: View {
             }
 
             if viewModel.diagnosisNeedsRefresh {
-                Text("状态已变化，请重新诊断")
+                Text("上次结果仅供回看，请重新诊断以确认当前状态。")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 16)
+            }
+
+            if viewModel.isRecoveringDiagnosis {
+                activityLabel("正在恢复本地链路并重新验证…")
+            } else if viewModel.isDiagnosing {
+                activityLabel("正在检查本地链路与 HTTPS 访问…")
             }
 
             if let testResult = viewModel.testResult {
@@ -731,14 +763,47 @@ struct MenuContentView: View {
             }
 
             if let report = viewModel.diagnoseReport {
-                if report.checks.contains(where: { $0.status.lowercased() != "pass" }) {
-                    MenuDisclosureRow("上次诊断", summary: diagnoseSummary(report), isExpanded: showingDiagnosticDetails) {
-                        showingDiagnosticDetails.toggle()
-                    }
-                    if showingDiagnosticDetails { diagnoseDetails(report) }
-                } else {
-                    StatusRow(label: "上次诊断", value: diagnoseSummary(report))
+                MenuDisclosureRow("上次诊断", summary: viewModel.diagnosisNeedsRefresh ? "需重新诊断" : report.summary, isExpanded: showingDiagnosticDetails) {
+                    showingDiagnosticDetails.toggle()
                 }
+                Text(viewModel.diagnosisNeedsRefresh ? "上次结论：\(report.conclusion)" : report.conclusion)
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+                Text(report.timeLabel)
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+                    .padding(.horizontal, 16)
+                if showingDiagnosticDetails { diagnoseDetails(report) }
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(viewModel.diagnosticActions) { action in
+                        Button {
+                            switch action {
+                            case .checkWebsite: onShowWebsiteCheck()
+                            case .openLogs: viewModel.openLogs()
+                            default: Task { await viewModel.performDiagnosticAction(action) }
+                            }
+                        } label: {
+                            Label(action.title, systemImage: action.icon)
+                        }
+                        .disabled(!viewModel.canPerformDiagnosticAction(action))
+                    }
+                    HStack(spacing: 16) {
+                        Button("重新诊断") { Task { await viewModel.runDiagnose() } }
+                            .disabled(viewModel.diagnosticActionBusy)
+                        Button("清除记录") { viewModel.clearDiagnosis() }
+                            .foregroundColor(.secondary)
+                            .disabled(viewModel.diagnosticActionBusy)
+                    }
+                }
+                .buttonStyle(BorderlessButtonStyle())
+                .font(.system(size: 11))
+                .padding(.horizontal, 16)
+            } else if viewModel.diagnosisNeedsRefresh && !viewModel.isDiagnosing && !viewModel.isRecoveringDiagnosis {
+                Button("重新诊断") { Task { await viewModel.runDiagnose() } }
+                    .buttonStyle(BorderlessButtonStyle())
+                    .font(.system(size: 11))
+                    .padding(.horizontal, 16)
+                    .disabled(viewModel.diagnosticActionBusy)
             }
 
         }
@@ -756,67 +821,65 @@ struct MenuContentView: View {
         }
     }
 
-    private func diagnoseSummary(_ report: DiagnoseReport) -> String {
-        guard !report.checks.isEmpty else { return "未获得检查结果" }
-        let failCount = report.checks.filter { $0.status.lowercased() == "fail" }.count
-        let warnCount = report.checks.filter { $0.status.lowercased() == "warn" }.count
-
-        if failCount > 0 {
-            return "\(failCount) 失败, \(warnCount) 警告"
-        }
-        if warnCount > 0 {
-            return "\(warnCount) 警告"
-        }
-        if report.checks.contains(where: { $0.status.lowercased() != "pass" }) {
-            return "检查未完成"
-        }
-        return "全部通过"
-    }
-
     private func diagnoseDetails(_ report: DiagnoseReport) -> some View {
-        let issues = report.checks.filter { $0.status.lowercased() != "pass" }
         return VStack(alignment: .leading, spacing: 6) {
-            ForEach(issues, id: \.name) { check in
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(diagnoseStatusLabel(check.status))
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(diagnoseStatusColor(check.status))
-                        Text(check.name)
-                            .font(.system(size: 11, weight: .semibold))
-                        Spacer()
-                    }
-                    Text(check.message)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let suggestedFix = check.suggestedFix, !suggestedFix.isEmpty {
-                        Text("建议：\(suggestedFix)")
+            Text(report.scope ?? "旧版结果未包含联网检查，不能据此判断网络正常。")
+                .font(.system(size: 11)).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(["运行状态", "联网测试", "本地文件", "其他检查"], id: \.self) { section in
+                let checks = report.checks.filter { $0.section == section }
+                if !checks.isEmpty {
+                    Text(section).font(.system(size: 11, weight: .semibold)).padding(.top, 4)
+                }
+                ForEach(checks, id: \.name) { check in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(diagnoseStatusLabel(check.status))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(diagnoseStatusColor(check.status))
+                            Text(check.displayTitle)
+                                .font(.system(size: 11, weight: .semibold))
+                            Spacer()
+                        }
+                        Text(check.message)
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        if let suggestedFix = check.suggestedFix, !suggestedFix.isEmpty {
+                            Text("建议：\(suggestedFix)")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
+                    .padding(8)
+                    .background(diagnoseStatusColor(check.status).opacity(0.12))
+                    .cornerRadius(6)
                 }
-                .padding(8)
-                .background(diagnoseStatusColor(check.status).opacity(0.12))
-                .cornerRadius(6)
             }
         }
         .padding(.horizontal, 16)
     }
 
     private func diagnoseStatusLabel(_ status: String) -> String {
+        let label: String
         switch status.lowercased() {
+        case "pass":
+            label = "通过"
         case "fail":
-            return "失败"
+            label = "失败"
         case "warn":
-            return "警告"
+            label = "提示"
+        case "skipped":
+            label = "未检查"
         default:
-            return status
+            label = "未确认"
         }
+        return viewModel.diagnosisNeedsRefresh ? "上次\(label)" : label
     }
 
     private func diagnoseStatusColor(_ status: String) -> Color {
+        if viewModel.diagnosisNeedsRefresh { return .secondary }
         switch status.lowercased() {
         case "fail":
             return .red
@@ -849,7 +912,7 @@ struct MenuContentView: View {
                 .cornerRadius(6)
             }
             .buttonStyle(PlainButtonStyle())
-            .disabled(viewModel.isDiagnosing || viewModel.isChangingTUN || viewModel.isChangingMode || viewModel.isBootstrapping)
+            .disabled(viewModel.diagnosticActionBusy)
         }
         .padding(.horizontal, 16)
     }
@@ -951,7 +1014,7 @@ struct MenuContentView: View {
             MenuButton(viewModel.isDiagnosing ? "正在诊断…" : "运行诊断", icon: "stethoscope") {
                 Task { await viewModel.runDiagnose() }
             }
-            .disabled(viewModel.isDiagnosing || viewModel.isChangingTUN || viewModel.isChangingMode || viewModel.isBootstrapping)
+            .disabled(viewModel.diagnosticActionBusy)
 
             Link(destination: URL(string: "https://github.com/Cass-ette/ProxyCat/issues/new/choose")!) {
                 HStack {

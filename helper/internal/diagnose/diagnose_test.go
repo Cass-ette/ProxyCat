@@ -18,7 +18,7 @@ func TestRunReportsStaticLocalChecks(t *testing.T) {
 		t.Fatalf("write subscriptions: %v", err)
 	}
 
-	report := Run(p)
+	report := RunStatic(p)
 	if report.App != "ProxyCat" {
 		t.Fatalf("App = %q", report.App)
 	}
@@ -51,7 +51,7 @@ func TestRunReportsStaticLocalChecks(t *testing.T) {
 }
 
 func TestRunReportJSONShape(t *testing.T) {
-	report := Run(paths.ForHome(t.TempDir()))
+	report := RunStatic(paths.ForHome(t.TempDir()))
 	payload, err := json.Marshal(report)
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)

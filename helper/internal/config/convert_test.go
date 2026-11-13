@@ -80,6 +80,19 @@ rules:
 	if !strings.Contains(yamlText, "external-controller: 127.0.0.1:9090") {
 		t.Fatalf("normalized config missing external-controller: %s", yamlText)
 	}
+	if !strings.Contains(yamlText, "geo-auto-update: true") || !strings.Contains(yamlText, "geo-update-interval: 24") {
+		t.Fatalf("geodata auto-update defaults missing: %s", yamlText)
+	}
+}
+
+func TestEnableGeoAutoUpdatePreservesExistingConfiguration(t *testing.T) {
+	updated, err := EnableGeoAutoUpdate([]byte("mixed-port: 7890\nrules: [\"MATCH,Proxy\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !GeoAutoUpdateEnabled([]byte(updated)) || !strings.Contains(updated, "geo-update-interval: 24") || !strings.Contains(updated, "mixed-port: 7890") {
+		t.Fatalf("geodata settings missing or config lost: %s", updated)
+	}
 }
 
 func TestSubscriptionCannotEnableTUN(t *testing.T) {
