@@ -693,6 +693,9 @@ struct ConnectionRecoveryTests {
         try expect(ProxyDelayResult(delay: 0, error: nil).quality == "未测试", "Zero is not a fast measurement")
         try expect(ProxyDelayResult(delay: 0, error: "timeout").quality == "不可用", "Failure differs from untested")
         try expect([42,150,800].map { ProxyDelayResult(delay: $0, error: nil).quality } == ["快","一般","慢"], "Latency categories stay readable")
+        try expect(ProxyDelayResult(delay: 42, error: nil).displayValue == "快 · 42 ms", "Show exact latency beside its quality label")
+        try expect(ProxyDelayResult(delay: 0, error: nil).displayValue == "未测试", "Do not show a measurement before testing")
+        try expect(ProxyDelayResult(delay: 42, error: "timeout").displayValue == "不可用", "Failed tests do not show a stale latency")
         try expect(ProxyDelayResult(delay: 800, error: nil).detail.contains("800 ms"), "Keep precise latency accessible")
     }
 

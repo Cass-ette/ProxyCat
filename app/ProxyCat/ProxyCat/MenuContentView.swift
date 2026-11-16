@@ -381,7 +381,7 @@ struct MenuContentView: View {
             if nodesExpanded {
                 if !viewModel.proxyGroups.isEmpty {
                     delayControls
-                    Text("快／一般／慢表示测试延迟；不可用表示本次测试失败。毫秒数见悬停提示。")
+                    Text("快／一般／慢为延迟等级，具体毫秒数显示在节点旁。")
                         .font(.system(size: 10)).foregroundColor(.secondary).padding(.horizontal, 16)
                     proxyGroupControls
                 } else {
@@ -699,7 +699,7 @@ struct MenuContentView: View {
         guard let result = viewModel.proxyDelays[proxy] else {
             return "未测试"
         }
-        return result.quality
+        return result.displayValue
     }
 
     private func delayColor(for proxy: String) -> Color {
