@@ -609,5 +609,9 @@ extension ProxyDelayResult {
         if delay <= 250 { return "一般" }
         return "慢"
     }
+    var displayValue: String {
+        guard error == nil, delay > 0 else { return quality }
+        return "\(quality) · \(delay) ms"
+    }
     var detail: String { error != nil ? "本次测试失败；不代表所有网站均不可达" : delay > 0 ? "\(delay) ms；仅为测试目标的响应延迟，不代表带宽" : "尚无有效测试结果" }
 }

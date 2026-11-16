@@ -783,6 +783,7 @@ class StatusViewModel: ObservableObject {
             proxyDelays = delays
             lastError = nil
         case .failure(let error):
+            proxyDelays = [:]
             lastError = "Delay test failed: \(error.localizedDescription)"
         }
     }

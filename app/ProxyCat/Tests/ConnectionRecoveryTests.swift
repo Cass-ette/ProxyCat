@@ -211,6 +211,10 @@ private final class Fixture {
                 if [ -f "$fixture_dir/fail-traffic" ]; then echo 'temporary metadata failure' >&2; exit 8; fi
                 cat "$fixture_dir/traffic-$3.json"
                 ;;
+            'groups delay')
+                if [ -f "$fixture_dir/fail-delays" ]; then echo 'delay test unavailable' >&2; exit 8; fi
+                echo '{"Node A":{"delay":42}}'
+                ;;
             'proxy-delay Auto') echo '{"delay":42}' ;;
             'proxy-delay Proxy') echo '{"delay":43}' ;;
             'proxy-delay GLOBAL') echo '{"delay":44}' ;;
@@ -346,6 +350,7 @@ struct ConnectionRecoveryTests {
         try await websiteResultsExpireOnContextChanges()
         try await automaticNodeChangesExplainOnlyObservedFacts()
         try latencyStatesAreDistinct()
+        try await failedBatchDelayTestClearsStaleResults()
         try connectionRecordsKeepRouteEvidenceAndApplicationGroups()
         try connectionRecordsKeepBoundedRecentHistory()
         try await connectionObservationPreservesRecordsOnFailure()
@@ -358,7 +363,7 @@ struct ConnectionRecoveryTests {
         try await tunProgressArrivesBeforeTheCommandFinishes()
         try await menuBarTrafficWarningsPreserveConnectionColors()
         try await nodeNamesAreFormattedOnlyForDisplay()
-        print("Passed 74 connection, diagnostic, website, node, mode, TUN, menu bar, update and subscription traffic regression tests")
+        print("Passed 75 connection, diagnostic, website, node, mode, TUN, menu bar, update and subscription traffic regression tests")
     }
 
     static func trafficPresentationKeepsUnknownAndExhaustedStatesHonest() throws {
@@ -693,7 +698,22 @@ struct ConnectionRecoveryTests {
         try expect(ProxyDelayResult(delay: 0, error: nil).quality == "未测试", "Zero is not a fast measurement")
         try expect(ProxyDelayResult(delay: 0, error: "timeout").quality == "不可用", "Failure differs from untested")
         try expect([42,150,800].map { ProxyDelayResult(delay: $0, error: nil).quality } == ["快","一般","慢"], "Latency categories stay readable")
+        try expect(ProxyDelayResult(delay: 42, error: nil).displayValue == "快 · 42 ms", "Show exact latency beside its quality label")
+        try expect(ProxyDelayResult(delay: 0, error: nil).displayValue == "未测试", "Do not show a measurement before testing")
+        try expect(ProxyDelayResult(delay: 42, error: "timeout").displayValue == "不可用", "Failed tests do not show a stale latency")
         try expect(ProxyDelayResult(delay: 800, error: nil).detail.contains("800 ms"), "Keep precise latency accessible")
+    }
+
+    @MainActor
+    static func failedBatchDelayTestClearsStaleResults() async throws {
+        let fixture = try Fixture()
+        fixture.viewModel.proxyDelays = ["Node A": ProxyDelayResult(delay: 42, error: nil)]
+        try fixture.set("fail-delays")
+
+        await fixture.viewModel.testProxyDelays()
+
+        try expect(fixture.viewModel.proxyDelays.isEmpty, "Failed batch tests must clear previous latency values")
+        try expect(fixture.viewModel.lastError?.contains("Delay test failed") == true, "Keep the batch test error visible")
     }
 
     @MainActor
